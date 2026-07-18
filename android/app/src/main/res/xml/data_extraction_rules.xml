@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android data extraction rules (API 31+).
+  Excludes the EncryptedSharedPreferences file used by flutter_secure_storage
+  from both cloud backup and device-to-device transfer. The database encryption
+  key is hardware-bound and must never leave the device.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref"
+                 path="FlutterSecureStorage" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref"
+                 path="FlutterSecureStorage" />
+    </device-transfer>
+</data-extraction-rules>
