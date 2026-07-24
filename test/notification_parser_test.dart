@@ -46,6 +46,19 @@ void main() {
       expect(parsed.bankName, 'HDFC Bank');
     });
 
+    test('Debit test with HDFC Bank A/C single asterisk account ending', () {
+      final parsed = NotificationParser.parse(
+        'HDFC Bank Alert',
+        'Sent Rs.1.00 from HDFC Bank A/C *2962 to John Doe.',
+      );
+
+      expect(parsed, isNotNull);
+      expect(parsed!.amount, 1.00);
+      expect(parsed.type, TransactionType.debit);
+      expect(parsed.bankName, 'HDFC Bank');
+      expect(parsed.cardEnding, '2962');
+    });
+
     test('Debit test with ₹ symbol, for prefix, and Axis Bank', () {
       final parsed = NotificationParser.parse(
         'Axis Bank Alert',
@@ -102,6 +115,20 @@ void main() {
       expect(parsed!.amount, 400.00);
       expect(parsed.merchant, 'Ola');
       expect(parsed.category, 'Travel & Transport');
+    });
+
+    test('parse() returns null when the amount overflows to infinity', () {
+      final content = 'Rs. ' + ('9' * 400) + ' debited from HDFC a/c xx1234';
+      final parsed = NotificationParser.parse('Transaction Alert', content);
+      expect(parsed, isNull);
+    });
+
+    test('parse() returns null when the amount exceeds the cap', () {
+      final parsed = NotificationParser.parse(
+        'Transaction Alert',
+        'Rs. 99,999,999 debited from HDFC a/c xx1234',
+      );
+      expect(parsed, isNull);
     });
 
     test('Heuristics category matches mixed casing, trailing spaces and unmatched fallback', () {

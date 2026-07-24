@@ -1,8 +1,10 @@
+import 'package:collection/collection.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/core/widgets/app_toast.dart';
+import 'package:expense_tracker/features/ingestion/notification_parser.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -133,6 +135,60 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
         time.minute,
       );
     });
+  }
+
+  Future<void> _pasteAndParseSmsText() async {
+    final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = clipboardData?.text?.trim();
+
+    if (text == null || text.isEmpty) {
+      if (mounted) AppToast.show(context, 'Clipboard is empty');
+      return;
+    }
+
+    final parsed = NotificationParser.parse('SMS', text);
+    if (parsed == null) {
+      if (mounted) {
+        AppToast.show(context, 'Could not parse transaction from pasted text', isError: true);
+      }
+      return;
+    }
+
+    setState(() {
+      _amountController.text = parsed.amount.toStringAsFixed(2);
+      _merchantController.text = parsed.merchant;
+      _selectedType = parsed.type;
+      if (_categories.contains(parsed.category)) {
+        _selectedCategory = parsed.category;
+      }
+
+      if (_accounts.isNotEmpty) {
+        final bankCode = NotificationService.extractBankCode(parsed.bankName);
+        final cardEnding = parsed.cardEnding;
+
+        Account? matched;
+        if (cardEnding != null && cardEnding.isNotEmpty) {
+          matched = _accounts.firstWhereOrNull(
+            (acc) =>
+                acc.bankName.toLowerCase().contains(bankCode) &&
+                acc.bankName.contains(cardEnding),
+          );
+          matched ??= _accounts.firstWhereOrNull(
+            (acc) => acc.bankName.contains(cardEnding),
+          );
+        }
+        matched ??= _accounts.firstWhereOrNull(
+          (acc) => acc.bankName.toLowerCase().contains(bankCode),
+        );
+        matched ??= _accounts.first;
+
+        _selectedAccountId = matched.id;
+      }
+    });
+
+    if (mounted) {
+      AppToast.show(context, 'Auto-filled details from SMS text!');
+    }
   }
 
   void _showCategoryPicker() {
@@ -480,6 +536,43 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   ),
                 ],
               ),
+
+              if (!_isEditing) ...[
+                const SizedBox(height: 12),
+                InkWell(
+                  onTap: _pasteAndParseSmsText,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryBlue.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppTheme.primaryBlue.withOpacity(0.2),
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.content_paste_go_rounded,
+                          size: 18,
+                          color: AppTheme.primaryBlue,
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Paste & Auto-Fill from SMS',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.primaryBlue,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
 
               // Expense / Income Toggle

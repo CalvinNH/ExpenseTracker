@@ -26,6 +26,11 @@ class ParsedNotification {
 class NotificationParser {
   NotificationParser._();
 
+  /// Sanity ceiling for a single parsed transaction (₹1 crore).
+  /// Rejects garbage matches and digit strings that overflow to
+  /// double.infinity.
+  static const double _maxAmount = 10000000;
+
   static ParsedNotification? parse(String title, String content) {
     final text = '$title $content';
 
@@ -42,7 +47,10 @@ class NotificationParser {
 
     final amountStr = amountMatch.group(1)!.replaceAll(',', '');
     final amount = double.tryParse(amountStr);
-    if (amount == null || amount <= 0) {
+    if (amount == null ||
+        !amount.isFinite ||
+        amount <= 0 ||
+        amount > _maxAmount) {
       return null;
     }
 
@@ -78,9 +86,9 @@ class NotificationParser {
 
     // 4. Parse Merchant
     String merchant = 'Unknown';
-    // Look for to/at/for/by/info:/vpa: prefixes followed by alphanumeric words + slashes/hyphens/dots
+    // Look for to/at/for/by/info:/vpa: prefixes followed by alphanumeric words + slashes/hyphens/dots/@
     final merchantRegex = RegExp(
-      r'\b(?:to|at|for|by)\s+([a-zA-Z0-9_/.\-]+)|\b(?:info:|vpa:)\s*([a-zA-Z0-9_/.\-]+)',
+      r'\b(?:to|at|for|by)\s+([a-zA-Z0-9_/@.\-]+)|\b(?:info:|vpa:)\s*([a-zA-Z0-9_/@.\-]+)',
       caseSensitive: false,
     );
     final matches = merchantRegex.allMatches(text);
@@ -136,17 +144,27 @@ class NotificationParser {
   }
 
   static String? extractCardEndingDigits(String text) {
-    // 1. Matches: card ending 1234, ending 1234, end 1234, ending in 1234, ending with 1234, a/c ending 1234, etc.
-    final endingRegex = RegExp(
-      r'(?:ending|end|ending in|ending with|a/c|ac)\s+(?:in\s+|with\s+)?(\d{4})',
+    // 1. Matches: A/c 2962, A/C: 2962, Card 2962, Account no. 2962, ending in 2962
+    final accountNoRegex = RegExp(
+      r'(?:a/c|ac|account|card)\s*(?:no\.?|number)?\s*[:.*]*\s*(\d{4})\b',
       caseSensitive: false,
     );
-    var match = endingRegex.firstMatch(text);
+    var match = accountNoRegex.firstMatch(text);
     if (match != null) {
       return match.group(1);
     }
 
-    // 2. Matches: xx1234, XXXX1234, ******1234, XXXXXX672345 (extracts last 4 digits)
+    // 2. Matches: card ending 1234, ending 1234, end 1234, ending in 1234, ending with 1234, a/c ending 1234, etc.
+    final endingRegex = RegExp(
+      r'(?:ending|end|ending in|ending with|a/c|ac)\s+(?:in\s+|with\s+)?(\d{4})',
+      caseSensitive: false,
+    );
+    match = endingRegex.firstMatch(text);
+    if (match != null) {
+      return match.group(1);
+    }
+
+    // 3. Matches: xx1234, XXXX1234, ******1234, XXXXXX672345 (extracts last 4 digits)
     final maskedRegex = RegExp(
       r'[xX*]{2,}\d*(\d{4})',
     );
@@ -155,7 +173,7 @@ class NotificationParser {
       return match.group(1);
     }
 
-    // 3. Matches general 4-digit suffix of a masked number without spacing, e.g. "x1234"
+    // 4. Matches general 4-digit suffix of a masked number without spacing, e.g. "x1234"
     final simpleMaskedRegex = RegExp(
       r'[xX*]+(\d{4})\b',
     );
@@ -164,7 +182,7 @@ class NotificationParser {
       return match.group(1);
     }
 
-    // 4. Matches dot prefix e.g. "...5678" or "... 5678"
+    // 5. Matches dot prefix e.g. "...5678" or "... 5678"
     final dotPrefixRegex = RegExp(
       r'\.{2,}\s*(\d{4})\b',
     );

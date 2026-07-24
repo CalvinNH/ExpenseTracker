@@ -30,9 +30,15 @@ class AppDatabase {
       return existing;
     }
 
-    _databaseFuture ??= _initDatabase();
-    _database = await _databaseFuture;
-    return _database!;
+    try {
+      _databaseFuture ??= _initDatabase();
+      _database = await _databaseFuture;
+      return _database!;
+    } catch (e) {
+      _databaseFuture = null;
+      _database = null;
+      rethrow;
+    }
   }
 
   Future<Database> _initDatabase() async {
@@ -199,6 +205,41 @@ class AppDatabase {
 
       return id;
     });
+  }
+
+  /// Returns true if a transaction with the same amount, type, account, and merchant
+  /// was recorded within [window] of now. Used ONLY by the notification
+  /// ingestion path to suppress duplicate alerts for the same underlying
+  /// transaction (e.g. re-posted or updated notifications).
+  Future<bool> hasRecentDuplicate({
+    required double amount,
+    required TransactionType type,
+    required int accountId,
+    String? merchant,
+    Duration window = const Duration(seconds: 30),
+  }) async {
+    final db = await database;
+    final cutoff = DateTime.now().subtract(window).toIso8601String();
+    
+    if (merchant != null && merchant.isNotEmpty && merchant != 'Unknown') {
+      final rows = await db.query(
+        tableTransactions,
+        columns: ['id'],
+        where: 'amount = ? AND type = ? AND account_id = ? AND merchant = ? AND timestamp >= ?',
+        whereArgs: [amount, type.value, accountId, merchant, cutoff],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) return true;
+    }
+
+    final rows = await db.query(
+      tableTransactions,
+      columns: ['id'],
+      where: 'amount = ? AND type = ? AND account_id = ? AND timestamp >= ?',
+      whereArgs: [amount, type.value, accountId, cutoff],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
   }
 
   Future<Transaction?> getTransaction(int id) async {

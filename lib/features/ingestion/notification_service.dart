@@ -1,14 +1,20 @@
 import 'dart:async';
 import 'dart:ui';
+import 'package:collection/collection.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
+import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/features/ingestion/notification_parser.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:notification_listener_service/notification_listener_service.dart';
 
 class NotificationService {
   static StreamSubscription? _subscription;
   static bool _isInitialized = false;
+  static const MethodChannel _systemChannel =
+      MethodChannel('com.calvin.expense_tracker/system');
+  static String? _defaultSmsPackage;
 
   // Static broadcast stream controller to notify UI of background transaction ingestions
   static final StreamController<void> _onTransactionIngested = StreamController<void>.broadcast();
@@ -16,6 +22,16 @@ class NotificationService {
 
   static void notifyTransactionIngested() {
     _onTransactionIngested.add(null);
+  }
+
+  static String extractBankCode(String bankName) {
+    final clean = bankName.toLowerCase();
+    for (final code in [
+      'hdfc', 'sbi', 'icici', 'axis', 'kotak', 'pnb', 'bob', 'yes', 'citi', 'hsbc', 'paytm', 'gpay'
+    ]) {
+      if (clean.contains(code)) return code;
+    }
+    return clean.split(' ').first;
   }
 
   static void _log(String message) {
@@ -59,6 +75,16 @@ class NotificationService {
       _log("Permission granted! Listening for notifications...");
       _isInitialized = true;
 
+      // Resolve the default SMS app once; only its notifications are ingested.
+      try {
+        _defaultSmsPackage =
+            await _systemChannel.invokeMethod<String>('getDefaultSmsPackage');
+        _log("Default SMS package: $_defaultSmsPackage");
+      } catch (e) {
+        _defaultSmsPackage = null;
+        _log("Failed to resolve default SMS package: $e");
+      }
+
       // This stream runs continuously in the background
       try {
         _subscription = NotificationListenerService.notificationsStream.listen((event) async {
@@ -73,7 +99,26 @@ class NotificationService {
             _log("Content: ${event.content}");
             _log("------------------------");
 
-            final parsed = NotificationParser.parse(event.title, event.content);
+            if (event.hasRemoved == true) return;
+
+            // Resolve default SMS package lazily inside background isolate context if needed
+            if (_defaultSmsPackage == null) {
+              try {
+                _defaultSmsPackage = await _systemChannel
+                    .invokeMethod<String>('getDefaultSmsPackage');
+              } catch (_) {}
+            }
+
+            // Only ingest notifications from the default SMS app. Fail closed:
+            // if the package could not be resolved, ingest nothing.
+            if (_defaultSmsPackage != null &&
+                event.packageName != _defaultSmsPackage) {
+              _log("Ignored notification from ${event.packageName} "
+                  "(not the default SMS app: $_defaultSmsPackage).");
+              return;
+            }
+
+            final parsed = NotificationParser.parse(event.title ?? '', event.content ?? '');
             if (parsed == null) {
               _log("Notification is not a valid transaction or could not be parsed.");
               return;
@@ -87,17 +132,45 @@ class NotificationService {
               return;
             }
 
-            // Match account by bankName / cardEnding
-            final matchedAccount = accounts.firstWhere(
-              (acc) {
-                if (parsed.cardEnding != null && acc.bankName.contains(parsed.cardEnding!)) {
-                  return true;
-                }
-                return acc.bankName.toLowerCase().contains(parsed.bankName.toLowerCase()) ||
-                       parsed.bankName.toLowerCase().contains(acc.bankName.toLowerCase());
-              },
-              orElse: () => accounts.first,
+            // Match account by bank code and card ending digits
+            final bankCode = extractBankCode(parsed.bankName);
+            final cardEnding = parsed.cardEnding;
+
+            Account? matchedAccount;
+            if (cardEnding != null && cardEnding.isNotEmpty) {
+              // Priority 1: Match both bank code and card ending
+              matchedAccount = accounts.firstWhereOrNull(
+                (acc) =>
+                    acc.bankName.toLowerCase().contains(bankCode) &&
+                    acc.bankName.contains(cardEnding),
+              );
+              // Priority 2: Match card ending alone
+              matchedAccount ??= accounts.firstWhereOrNull(
+                (acc) => acc.bankName.contains(cardEnding),
+              );
+            }
+
+            // Priority 3: Match bank code alone (e.g., 'hdfc', 'sbi', 'icici')
+            matchedAccount ??= accounts.firstWhereOrNull(
+              (acc) => acc.bankName.toLowerCase().contains(bankCode),
             );
+
+            // Priority 4: Fallback to first account
+            matchedAccount ??= accounts.first;
+
+            // Suppress duplicates: the same SMS can be re-delivered when the SMS
+            // app updates its conversation notification.
+            final isDuplicate = await AppDatabase.instance.hasRecentDuplicate(
+              amount: parsed.amount,
+              type: parsed.type,
+              accountId: matchedAccount.id!,
+              merchant: parsed.merchant,
+            );
+            if (isDuplicate) {
+              _log("Skipped duplicate transaction: ${parsed.amount} "
+                  "${parsed.type} on account ${matchedAccount.bankName}");
+              return;
+            }
 
             final transaction = Transaction(
               amount: parsed.amount,

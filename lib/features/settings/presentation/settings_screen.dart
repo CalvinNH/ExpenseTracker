@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
+import 'package:expense_tracker/core/services/reminder_notification_service.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/core/widgets/app_toast.dart';
 import 'package:expense_tracker/features/dashboard/presentation/accounts_screen.dart';
@@ -16,6 +17,44 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  bool _isReminderEnabled = false;
+  TimeOfDay _reminderTime = const TimeOfDay(hour: 21, minute: 0);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadReminderSettings();
+  }
+
+  Future<void> _loadReminderSettings() async {
+    final enabled = await ReminderNotificationService.instance.isReminderEnabled();
+    final time = await ReminderNotificationService.instance.getReminderTime();
+    if (mounted) {
+      setState(() {
+        _isReminderEnabled = enabled;
+        _reminderTime = time;
+      });
+    }
+  }
+
+  Future<void> _selectReminderTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _reminderTime,
+    );
+    if (picked != null && mounted) {
+      setState(() => _reminderTime = picked);
+      await ReminderNotificationService.instance.setReminderTime(picked);
+      if (mounted) AppToast.show(context, 'Daily reminder time updated');
+    }
+  }
+
+  String _formatReminderTime(TimeOfDay time) {
+    final period = time.hour >= 12 ? 'PM' : 'AM';
+    final hour = time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
+    final minute = time.minute.toString().padLeft(2, '0');
+    return '$hour:$minute $period';
+  }
 
   @override
   void dispose() {
@@ -23,10 +62,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   String _escapeCsvField(String field) {
-    if (field.contains(',') || field.contains('"') || field.contains('\n')) {
-      return '"${field.replaceAll('"', '""')}"';
+    var value = field;
+    // Neutralize spreadsheet formula injection (OWASP): cells starting
+    // with =, +, -, @, tab, or CR are prefixed with a single quote so
+    // Excel/Sheets treat them as text, not formulas.
+    if (value.isNotEmpty && '=+-@\t\r'.contains(value[0])) {
+      value = "'$value";
     }
-    return field;
+    if (value.contains(',') || value.contains('"') || value.contains('\n')) {
+      return '"${value.replaceAll('"', '""')}"';
+    }
+    return value;
   }
 
   Future<void> _exportToCsv() async {
@@ -234,6 +280,113 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
               ),
+              const SizedBox(height: 28),
+
+              // Daily Reminder Section
+              const Text(
+                'Notifications',
+                style: TextStyle(
+                  color: AppTheme.textDark,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: AppTheme.cardShadow,
+                ),
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      secondary: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: AppTheme.primaryBlue.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(
+                          Icons.notifications_active_rounded,
+                          color: AppTheme.primaryBlue,
+                        ),
+                      ),
+                      title: const Text(
+                        'Daily Manual Entry Reminder',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textDark,
+                          fontSize: 15,
+                        ),
+                      ),
+                      subtitle: const Padding(
+                        padding: EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Reminds you to add missed transactions daily',
+                          style: TextStyle(
+                            color: AppTheme.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      value: _isReminderEnabled,
+                      onChanged: (val) async {
+                        setState(() => _isReminderEnabled = val);
+                        await ReminderNotificationService.instance.setReminderEnabled(val);
+                        if (mounted) {
+                          AppToast.show(
+                            context,
+                            val ? 'Daily reminder enabled' : 'Daily reminder disabled',
+                          );
+                        }
+                      },
+                    ),
+                    if (_isReminderEnabled) ...[
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        leading: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: AppTheme.successGreen.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(
+                            Icons.access_time_rounded,
+                            color: AppTheme.successGreen,
+                          ),
+                        ),
+                        title: const Text(
+                          'Reminder Time',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textDark,
+                            fontSize: 15,
+                          ),
+                        ),
+                        subtitle: Text(
+                          _formatReminderTime(_reminderTime),
+                          style: const TextStyle(
+                            color: AppTheme.primaryBlue,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                        trailing: const Icon(
+                          Icons.edit_outlined,
+                          color: AppTheme.textMuted,
+                          size: 20,
+                        ),
+                        onTap: _selectReminderTime,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
               const SizedBox(height: 48),
 
               // Privacy Notice
@@ -253,6 +406,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: AppTheme.textMuted,
                         fontSize: 12,
                         fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Expense Tracker v1.0.1 (Build 2)',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: AppTheme.textMuted.withOpacity(0.7),
+                        fontSize: 11,
                       ),
                     ),
                   ],

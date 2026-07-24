@@ -1,8 +1,40 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 class AppTheme {
   AppTheme._();
+
+  static bool get _isTest =>
+      WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
+      Platform.environment.containsKey('FLUTTER_TEST');
+
+  static TextTheme _buildTextTheme() {
+    const base = TextTheme(
+      displayLarge: TextStyle(color: textDark, fontWeight: FontWeight.bold),
+      titleLarge: TextStyle(color: textDark, fontWeight: FontWeight.bold),
+      titleMedium: TextStyle(color: textDark, fontWeight: FontWeight.w600),
+      bodyLarge: TextStyle(color: textDark),
+      bodyMedium: TextStyle(color: textDark),
+      bodySmall: TextStyle(color: textMuted),
+    );
+    if (_isTest) return base;
+    return GoogleFonts.interTextTheme(base);
+  }
+
+  static TextStyle _appBarTitleStyle() {
+    const base = TextStyle(
+      color: textDark,
+      fontSize: 20,
+      fontWeight: FontWeight.bold,
+    );
+    if (_isTest) return base;
+    return GoogleFonts.inter(
+      color: textDark,
+      fontSize: 20,
+      fontWeight: FontWeight.bold,
+    );
+  }
 
   // Colors
   static const Color primaryBlue = Color(0xFF0044FF);
@@ -101,16 +133,7 @@ class AppTheme {
         error: errorRed,
         onError: Colors.white,
       ),
-      textTheme: GoogleFonts.interTextTheme(
-        const TextTheme(
-          displayLarge: TextStyle(color: textDark, fontWeight: FontWeight.bold),
-          titleLarge: TextStyle(color: textDark, fontWeight: FontWeight.bold),
-          titleMedium: TextStyle(color: textDark, fontWeight: FontWeight.w600),
-          bodyLarge: TextStyle(color: textDark),
-          bodyMedium: TextStyle(color: textDark),
-          bodySmall: TextStyle(color: textMuted),
-        ),
-      ),
+      textTheme: _buildTextTheme(),
       cardTheme: CardThemeData(
         color: surface,
         elevation: 0,
@@ -122,11 +145,7 @@ class AppTheme {
         backgroundColor: background,
         elevation: 0,
         iconTheme: const IconThemeData(color: textDark),
-        titleTextStyle: GoogleFonts.inter(
-          color: textDark,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
+        titleTextStyle: _appBarTitleStyle(),
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: primaryBlue,

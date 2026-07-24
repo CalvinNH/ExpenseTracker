@@ -21,8 +21,24 @@ class DatabaseMigrator {
   static final DatabaseMigrator instance = DatabaseMigrator._();
 
   static const _migrationFlagKey = 'sqlcipher_migration_complete';
+  static const _androidOptions = AndroidOptions(
+    encryptedSharedPreferences: true,
+  );
 
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _encryptedStorage = const FlutterSecureStorage(
+    aOptions: _androidOptions,
+  );
+  final FlutterSecureStorage _legacyStorage = const FlutterSecureStorage();
+
+  Future<bool> _isMigrationCompleted() async {
+    try {
+      final flag1 = await _encryptedStorage.read(key: _migrationFlagKey);
+      if (flag1 == 'true') return true;
+      final flag2 = await _legacyStorage.read(key: _migrationFlagKey);
+      if (flag2 == 'true') return true;
+    } catch (_) {}
+    return false;
+  }
 
   /// Runs the plaintext → encrypted migration if it hasn't been completed yet.
   ///
@@ -89,6 +105,13 @@ class DatabaseMigrator {
     try {
       // Step 3: Attach encrypted DB and export
       // Use single quotes around the passphrase to pass it as a SQL string literal.
+      // Defense-in-depth: the passphrase is interpolated into the ATTACH
+      // statement below. That is safe ONLY because SecurityKeyManager
+      // generates Base64URL keys ([A-Za-z0-9_-]). Enforce the invariant so
+      // a future change to key generation cannot introduce SQL injection.
+      if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(passphrase)) {
+        throw ArgumentError('Invalid passphrase format for DB migration.');
+      }
       await plaintextDb.execute(
         "ATTACH DATABASE '$tempEncryptedPath' AS encrypted KEY '$passphrase'",
       );
@@ -169,12 +192,7 @@ class DatabaseMigrator {
     }
   }
 
-  Future<bool> _isMigrationCompleted() async {
-    final flag = await _storage.read(key: _migrationFlagKey);
-    return flag == 'true';
-  }
-
   Future<void> _markMigrationCompleted() async {
-    await _storage.write(key: _migrationFlagKey, value: 'true');
+    await _encryptedStorage.write(key: _migrationFlagKey, value: 'true');
   }
 }
