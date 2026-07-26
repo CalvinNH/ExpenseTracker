@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:ui';
-import 'package:expense_tracker/core/database/app_database.dart';
-import 'package:expense_tracker/core/models/account.dart';
-import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/services/notification_log_service.dart';
-import 'package:expense_tracker/features/ingestion/notification_parser.dart';
+import 'package:expense_tracker/features/ingestion/notification_ingestion_processor.dart';
+import 'package:expense_tracker/features/ingestion/notification_source_policy.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:notification_listener_service/notification_event.dart';
@@ -14,6 +12,8 @@ class NotificationService {
   static StreamSubscription<ServiceNotificationEvent>? _subscription;
   static bool _isInitialized = false;
   static bool _isInitializing = false;
+  static NotificationIngestionProcessor _processor =
+      NotificationIngestionProcessor();
 
   static const MethodChannel _methodeChannel = MethodChannel(
     'x-slayer/notifications_channel',
@@ -162,6 +162,11 @@ class NotificationService {
     }
 
     if (isGranted) {
+      _processor = NotificationIngestionProcessor(
+        sourcePolicy: NotificationSourcePolicy(
+          defaultSmsPackage: await _getDefaultSmsPackage(),
+        ),
+      );
       // Check native listener connection state
       final isConnected = await isServiceConnected();
       await _nlog.log(
@@ -258,6 +263,20 @@ class NotificationService {
     }
   }
 
+  static Future<String?> _getDefaultSmsPackage() async {
+    try {
+      return await _queueChannel.invokeMethod<String>('getDefaultSmsPackage');
+    } on MissingPluginException {
+      return null;
+    } catch (error) {
+      await _nlog.logError(
+        'SOURCE_POLICY',
+        'Default SMS package lookup failed: $error',
+      );
+      return null;
+    }
+  }
+
   static Future<void> _processNotification(
     ServiceNotificationEvent event, {
     required String source,
@@ -265,120 +284,39 @@ class NotificationService {
     try {
       await _nlog.logNotificationReceived(
         packageName: event.packageName,
-        title: event.title,
-        content: event.content,
         hasRemoved: event.hasRemoved,
+        notificationId: event.id,
+        postedAtMillis: event.timestamp,
       );
 
-      if (event.hasRemoved) {
-        await _nlog.logFilterDecision(
+      final result = await _processor.ingest(
+        NotificationEnvelope(
           packageName: event.packageName,
-          passed: false,
-          reason: '$source: notification removed',
-        );
-        return;
-      }
-      if (event.packageName == 'com.calvin.expense_tracker') {
-        await _nlog.logFilterDecision(
-          packageName: event.packageName,
-          passed: false,
-          reason: '$source: own app notification',
-        );
-        return;
-      }
-
-      final parsed = NotificationParser.parse(event.title, event.content);
-      if (parsed == null) {
-        await _nlog.logParseResult(
-          success: false,
-          rawInput: '${event.title} | ${event.content}',
-        );
-        return;
-      }
-      await _nlog.logParseResult(
-        success: true,
-        parsedSummary: '$source | $parsed',
-      );
-
-      final accounts = await AppDatabase.instance.getAllAccounts();
-      if (accounts.isEmpty) {
-        await _nlog.logError(
-          'ACCOUNTS',
-          'No accounts found. Cannot save parsed transaction.',
-        );
-        return;
-      }
-
-      final matchedAccount = _matchAccount(accounts, parsed);
-      final eventTime = event.timestamp > 0
-          ? DateTime.fromMillisecondsSinceEpoch(event.timestamp)
-          : DateTime.now();
-      final isDuplicate = await AppDatabase.instance.hasRecentDuplicate(
-        amount: parsed.amount,
-        type: parsed.type,
-        accountId: matchedAccount.id!,
-        merchant: parsed.merchant,
-        referenceTime: eventTime,
-        window: const Duration(minutes: 5),
-      );
-      await _nlog.logDuplicateCheck(
-        isDuplicate: isDuplicate,
-        details:
-            '$source amount=${parsed.amount} type=${parsed.type} '
-            'account=${matchedAccount.bankName} merchant=${parsed.merchant}',
-      );
-      if (isDuplicate) return;
-
-      final id = await AppDatabase.instance.createTransaction(
-        Transaction(
-          amount: parsed.amount,
-          type: parsed.type,
-          timestamp: eventTime,
-          merchant: parsed.merchant,
-          category: parsed.category,
-          accountId: matchedAccount.id!,
+          notificationId: event.id,
+          title: event.title,
+          content: event.content,
+          postedAt: event.timestamp > 0
+              ? DateTime.fromMillisecondsSinceEpoch(event.timestamp)
+              : null,
+          ingestedAt: DateTime.now(),
+          hasRemoved: event.hasRemoved,
         ),
       );
-      await _nlog.logDatabaseWrite(
-        transactionId: id,
-        accountName: matchedAccount.bankName,
+      await _nlog.log(
+        'INGEST',
+        'source=$source disposition=${result.disposition.name} '
+            'rawId=${result.rawEventId ?? '-'} '
+            'code=${result.diagnosticCode ?? 'none'}',
       );
-      _onTransactionIngested.add(null);
+      if (result.disposition == IngestionDisposition.posted) {
+        _onTransactionIngested.add(null);
+      }
     } catch (e, stackTrace) {
       await _nlog.logError(
         'PROCESS',
         '$source notification failed: $e\n$stackTrace',
       );
     }
-  }
-
-  static Account _matchAccount(
-    List<Account> accounts,
-    ParsedNotification parsed,
-  ) {
-    final bankCode = extractBankCode(parsed.bankName);
-    final cardEnding = parsed.cardEnding;
-    Account? matched;
-
-    if (cardEnding != null && cardEnding.isNotEmpty) {
-      matched = accounts.cast<Account?>().firstWhere(
-        (account) =>
-            account!.bankName.toLowerCase().contains(bankCode) &&
-            account.bankName.contains(cardEnding),
-        orElse: () => null,
-      );
-      matched ??= accounts.cast<Account?>().firstWhere(
-        (account) => account!.bankName.contains(cardEnding),
-        orElse: () => null,
-      );
-    }
-    if (parsed.bankName != 'Unknown Bank') {
-      matched ??= accounts.cast<Account?>().firstWhere(
-        (account) => account!.bankName.toLowerCase().contains(bankCode),
-        orElse: () => null,
-      );
-    }
-    return matched ?? accounts.first;
   }
 
   static void dispose() {

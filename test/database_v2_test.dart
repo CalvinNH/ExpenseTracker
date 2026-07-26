@@ -34,7 +34,7 @@ void main() {
     }
   });
 
-  test('fresh database creates version 2 domain schema and indexes', () async {
+  test('fresh database creates current domain schema and indexes', () async {
     final db = await AppDatabase.instance.database;
     final version = await db.getVersion();
     expect(version, AppDatabase.databaseVersion);
@@ -60,6 +60,8 @@ void main() {
     expect(indexNames, contains('idx_ledger_account_occurred'));
     expect(indexNames, contains('idx_ledger_transaction_group'));
     expect(indexNames, contains('idx_parsed_instrument_last_four'));
+    expect(indexNames, contains('idx_raw_supersedes'));
+    expect(indexNames, contains('idx_ledger_legacy_transaction'));
   });
 
   test('version 1 upgrade preserves account and transaction data', () async {
@@ -108,7 +110,7 @@ void main() {
     await legacyDb.close();
 
     final migrated = await AppDatabase.instance.database;
-    expect(await migrated.getVersion(), 2);
+    expect(await migrated.getVersion(), AppDatabase.databaseVersion);
 
     final account = await AppDatabase.instance.getAccount(7);
     expect(account, isNotNull);
@@ -139,6 +141,61 @@ void main() {
     final ledgerCount = ledgerCountRows.first['count'] as int;
     expect(ledgerCount, 0, reason: 'legacy effects must not be duplicated');
   });
+
+  test(
+    'version 2 upgrade adds source supersession and ledger linkage',
+    () async {
+      final path = AppDatabase.databasePathOverrideForTesting!;
+      final version2Db = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 2,
+          onCreate: (db, version) async {
+            await db.execute('''
+            CREATE TABLE raw_notification_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              package_name TEXT NOT NULL,
+              notification_key TEXT,
+              notification_id INTEGER,
+              notification_tag TEXT,
+              title TEXT,
+              content TEXT,
+              posted_at TEXT NOT NULL,
+              ingested_at TEXT NOT NULL,
+              payload_hash TEXT NOT NULL,
+              parser_version INTEGER NOT NULL,
+              processing_state TEXT NOT NULL,
+              structural_fingerprint TEXT
+            )
+          ''');
+            await db.execute('''
+            CREATE TABLE ledger_entries (
+              id INTEGER PRIMARY KEY AUTOINCREMENT
+            )
+          ''');
+          },
+        ),
+      );
+      await version2Db.close();
+
+      final migrated = await AppDatabase.instance.database;
+      expect(await migrated.getVersion(), AppDatabase.databaseVersion);
+      final rawColumns = await migrated.rawQuery(
+        'PRAGMA table_info(raw_notification_events)',
+      );
+      final ledgerColumns = await migrated.rawQuery(
+        'PRAGMA table_info(ledger_entries)',
+      );
+      expect(
+        rawColumns.map((row) => row['name']),
+        contains('supersedes_event_id'),
+      );
+      expect(
+        ledgerColumns.map((row) => row['name']),
+        contains('legacy_transaction_id'),
+      );
+    },
+  );
 
   test(
     'balance rebuild uses opening balance and posted ledger entries',

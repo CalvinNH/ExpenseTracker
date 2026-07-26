@@ -1,6 +1,7 @@
 package com.calvin.expense_tracker
 
 import android.os.Bundle
+import android.provider.Telephony
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -20,6 +21,10 @@ class MainActivity : FlutterFragmentActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             "expense_tracker/notification_queue"
         ).setMethodCallHandler { call, result ->
+            if (call.method == "getDefaultSmsPackage") {
+                result.success(Telephony.Sms.getDefaultSmsPackage(this))
+                return@setMethodCallHandler
+            }
             if (call.method != "drain") {
                 result.notImplemented()
                 return@setMethodCallHandler

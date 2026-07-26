@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -58,17 +59,18 @@ class NotificationLogService {
     }
   }
 
-  /// Log a received notification with all raw fields.
+  /// Log source metadata. Raw notification text is never written in release.
   Future<void> logNotificationReceived({
     required String packageName,
-    required String title,
-    required String content,
     required bool hasRemoved,
+    int? notificationId,
+    int? postedAtMillis,
   }) async {
     await log(
       'RECEIVED',
       'pkg=$packageName | removed=$hasRemoved | '
-          'title="$title" | content="$content"',
+          'notificationId=${notificationId ?? '-'} | '
+          'postedAtMillis=${postedAtMillis ?? '-'}',
     );
   }
 
@@ -94,7 +96,12 @@ class NotificationLogService {
     if (success) {
       await log('PARSER', 'OK | $parsedSummary');
     } else {
-      await log('PARSER', 'FAIL | input="$rawInput"');
+      await log(
+        'PARSER',
+        kReleaseMode
+            ? 'FAIL | code=parser_no_match'
+            : 'FAIL | input="$rawInput"',
+      );
     }
   }
 

@@ -22,7 +22,7 @@ class AppDatabase {
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 2;
+  static const databaseVersion = 3;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -156,6 +156,8 @@ class AppDatabase {
       switch (version) {
         case 1:
           await _upgradeFrom1To2(db);
+        case 2:
+          await _upgradeFrom2To3(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -217,6 +219,38 @@ class AppDatabase {
     await _createDomainTablesAndIndexes(db);
   }
 
+  Future<void> _upgradeFrom2To3(Database db) async {
+    final rawColumns = await db.rawQuery(
+      'PRAGMA table_info($tableRawNotificationEvents)',
+    );
+    if (!rawColumns.any((row) => row['name'] == 'supersedes_event_id')) {
+      await db.execute(
+        'ALTER TABLE $tableRawNotificationEvents '
+        'ADD COLUMN supersedes_event_id INTEGER '
+        'REFERENCES $tableRawNotificationEvents (id) ON DELETE SET NULL',
+      );
+    }
+    final ledgerColumns = await db.rawQuery(
+      'PRAGMA table_info($tableLedgerEntries)',
+    );
+    if (!ledgerColumns.any((row) => row['name'] == 'legacy_transaction_id')) {
+      await db.execute(
+        'ALTER TABLE $tableLedgerEntries '
+        'ADD COLUMN legacy_transaction_id INTEGER '
+        'REFERENCES $tableTransactions (id) ON DELETE CASCADE',
+      );
+    }
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_legacy_transaction '
+      'ON $tableLedgerEntries (legacy_transaction_id) '
+      'WHERE legacy_transaction_id IS NOT NULL',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_raw_supersedes '
+      'ON $tableRawNotificationEvents (supersedes_event_id)',
+    );
+  }
+
   Future<void> _createDomainTablesAndIndexes(Database db) async {
     await db.execute('''
       CREATE TABLE $tableRawNotificationEvents (
@@ -232,7 +266,10 @@ class AppDatabase {
         payload_hash TEXT NOT NULL,
         parser_version INTEGER NOT NULL,
         processing_state TEXT NOT NULL,
-        structural_fingerprint TEXT
+        structural_fingerprint TEXT,
+        supersedes_event_id INTEGER,
+        FOREIGN KEY (supersedes_event_id)
+          REFERENCES $tableRawNotificationEvents (id) ON DELETE SET NULL
       )
     ''');
     await db.execute('''
@@ -276,6 +313,7 @@ class AppDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         transaction_group_id INTEGER,
         parsed_financial_event_id INTEGER,
+        legacy_transaction_id INTEGER,
         account_id INTEGER NOT NULL,
         direction TEXT NOT NULL,
         amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0),
@@ -290,6 +328,8 @@ class AppDatabase {
           REFERENCES $tableTransactionGroups (id) ON DELETE SET NULL,
         FOREIGN KEY (parsed_financial_event_id)
           REFERENCES $tableParsedFinancialEvents (id) ON DELETE SET NULL,
+        FOREIGN KEY (legacy_transaction_id)
+          REFERENCES $tableTransactions (id) ON DELETE CASCADE,
         FOREIGN KEY (account_id)
           REFERENCES $tableAccounts (id) ON DELETE CASCADE
       )
@@ -321,6 +361,15 @@ class AppDatabase {
     await db.execute(
       'CREATE INDEX idx_ledger_transaction_group '
       'ON $tableLedgerEntries (transaction_group_id)',
+    );
+    await db.execute(
+      'CREATE UNIQUE INDEX idx_ledger_legacy_transaction '
+      'ON $tableLedgerEntries (legacy_transaction_id) '
+      'WHERE legacy_transaction_id IS NOT NULL',
+    );
+    await db.execute(
+      'CREATE INDEX idx_raw_supersedes '
+      'ON $tableRawNotificationEvents (supersedes_event_id)',
     );
   }
 
@@ -516,6 +565,42 @@ class AppDatabase {
         throw StateError('Transaction with id ${transaction.id} not found.');
       }
       final oldTxn = Transaction.fromMap(oldTxnRows.first);
+      final linkedLedgerRows = await txn.query(
+        tableLedgerEntries,
+        columns: ['id', 'account_id'],
+        where: 'legacy_transaction_id = ?',
+        whereArgs: [transaction.id],
+        limit: 1,
+      );
+      if (linkedLedgerRows.isNotEmpty) {
+        final oldAccountId = linkedLedgerRows.first['account_id'] as int;
+        final updated = await txn.update(
+          tableTransactions,
+          transaction.toMap(),
+          where: 'id = ?',
+          whereArgs: [transaction.id],
+        );
+        await txn.update(
+          tableLedgerEntries,
+          {
+            'account_id': transaction.accountId,
+            'direction': transaction.type == TransactionType.credit
+                ? FinancialDirection.credit.storageValue
+                : FinancialDirection.debit.storageValue,
+            'amount_minor': majorToMinor(transaction.amount),
+            'occurred_at': transaction.timestamp.toIso8601String(),
+            'category': transaction.category,
+            'merchant': transaction.merchant,
+          },
+          where: 'legacy_transaction_id = ?',
+          whereArgs: [transaction.id],
+        );
+        await _rebuildAccountBalance(txn, oldAccountId);
+        if (transaction.accountId != oldAccountId) {
+          await _rebuildAccountBalance(txn, transaction.accountId);
+        }
+        return updated;
+      }
 
       // 2. Revert old transaction balance from old account
       final oldAccRows = await txn.query(
@@ -616,6 +701,23 @@ class AppDatabase {
         return 0;
       }
       final oldTxn = Transaction.fromMap(oldTxnRows.first);
+      final linkedLedgerRows = await txn.query(
+        tableLedgerEntries,
+        columns: ['account_id'],
+        where: 'legacy_transaction_id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (linkedLedgerRows.isNotEmpty) {
+        final accountId = linkedLedgerRows.first['account_id'] as int;
+        final deleted = await txn.delete(
+          tableTransactions,
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        await _rebuildAccountBalance(txn, accountId);
+        return deleted;
+      }
 
       // 2. Revert old transaction balance from account
       final accRows = await txn.query(
@@ -656,6 +758,127 @@ class AppDatabase {
     return db.insert(tableRawNotificationEvents, event.toMap());
   }
 
+  Future<RawNotificationInsertResult> insertRawNotificationIdempotently(
+    RawNotificationEvent event,
+  ) async {
+    final db = await database;
+    return db.transaction((txn) async {
+      final exactWhere = <String>['package_name = ?'];
+      final exactArgs = <Object?>[event.packageName];
+      void addExactIdentity(String column, Object? value) {
+        if (value == null) {
+          exactWhere.add('$column IS NULL');
+        } else {
+          exactWhere.add('$column = ?');
+          exactArgs.add(value);
+        }
+      }
+
+      addExactIdentity('notification_key', event.notificationKey);
+      addExactIdentity('notification_id', event.notificationId);
+      addExactIdentity('notification_tag', event.notificationTag);
+      exactWhere.add('payload_hash = ?');
+      exactArgs.add(event.payloadHash);
+      exactWhere.add('posted_at = ?');
+      exactArgs.add(event.postedAt.toIso8601String());
+
+      final exactRows = await txn.query(
+        tableRawNotificationEvents,
+        where: exactWhere.join(' AND '),
+        whereArgs: exactArgs,
+        limit: 1,
+      );
+      if (exactRows.isNotEmpty) {
+        return RawNotificationInsertResult(
+          event: RawNotificationEvent.fromMap(exactRows.first),
+          wasInserted: false,
+        );
+      }
+
+      int? supersedesEventId;
+      if (event.notificationKey != null || event.notificationId != null) {
+        final identityClauses = <String>[];
+        final identityArgs = <Object?>[event.packageName];
+        if (event.notificationKey != null) {
+          identityClauses.add('notification_key = ?');
+          identityArgs.add(event.notificationKey);
+        }
+        if (event.notificationId != null) {
+          if (event.notificationTag == null) {
+            identityClauses.add(
+              '(notification_id = ? AND notification_tag IS NULL)',
+            );
+            identityArgs.add(event.notificationId);
+          } else {
+            identityClauses.add(
+              '(notification_id = ? AND notification_tag = ?)',
+            );
+            identityArgs
+              ..add(event.notificationId)
+              ..add(event.notificationTag);
+          }
+        }
+        final priorRows = await txn.query(
+          tableRawNotificationEvents,
+          columns: ['id'],
+          where: 'package_name = ? AND (${identityClauses.join(' OR ')})',
+          whereArgs: identityArgs,
+          orderBy: 'ingested_at DESC, id DESC',
+          limit: 1,
+        );
+        supersedesEventId = priorRows.isEmpty
+            ? null
+            : priorRows.first['id'] as int;
+      }
+
+      final eventToInsert = RawNotificationEvent(
+        packageName: event.packageName,
+        notificationKey: event.notificationKey,
+        notificationId: event.notificationId,
+        notificationTag: event.notificationTag,
+        title: event.title,
+        content: event.content,
+        postedAt: event.postedAt,
+        ingestedAt: event.ingestedAt,
+        payloadHash: event.payloadHash,
+        parserVersion: event.parserVersion,
+        processingState: event.processingState,
+        structuralFingerprint: event.structuralFingerprint,
+        supersedesEventId: supersedesEventId,
+      );
+      final id = await txn.insert(
+        tableRawNotificationEvents,
+        eventToInsert.toMap(),
+      );
+      return RawNotificationInsertResult(
+        event: RawNotificationEvent.fromMap({
+          ...eventToInsert.toMap(),
+          'id': id,
+        }),
+        wasInserted: true,
+      );
+    });
+  }
+
+  Future<void> updateRawNotificationProcessingState(
+    int id,
+    RawNotificationProcessingState state,
+  ) async {
+    final db = await database;
+    await db.update(
+      tableRawNotificationEvents,
+      {'processing_state': state.storageValue},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<RawNotificationEvent>> getAllRawNotificationEvents() async {
+    final db = await database;
+    final rows = await db.query(tableRawNotificationEvents, orderBy: 'id ASC');
+    return rows.map(RawNotificationEvent.fromMap).toList();
+  }
+
   Future<RawNotificationEvent?> getRawNotificationEvent(int id) async {
     final db = await database;
     final rows = await db.query(
@@ -670,6 +893,39 @@ class AppDatabase {
   Future<int> createParsedFinancialEvent(ParsedFinancialEvent event) async {
     final db = await database;
     return db.insert(tableParsedFinancialEvents, event.toMap());
+  }
+
+  Future<int> postIngestedTransaction({
+    required Transaction transaction,
+    required int parsedFinancialEventId,
+  }) async {
+    final db = await database;
+    return db.transaction((txn) async {
+      final transactionId = await txn.insert(
+        tableTransactions,
+        transaction.toMap(),
+      );
+      await txn.insert(
+        tableLedgerEntries,
+        LedgerEntry(
+          parsedFinancialEventId: parsedFinancialEventId,
+          legacyTransactionId: transactionId,
+          accountId: transaction.accountId,
+          direction: transaction.type == TransactionType.credit
+              ? FinancialDirection.credit
+              : FinancialDirection.debit,
+          amountMinor: majorToMinor(transaction.amount),
+          currencyCode: 'INR',
+          occurredAt: transaction.timestamp,
+          eventRole: LedgerEventRole.primary,
+          category: transaction.category,
+          merchant: transaction.merchant,
+          createdAt: DateTime.now().toUtc(),
+        ).toMap(),
+      );
+      await _rebuildAccountBalance(txn, transaction.accountId);
+      return transactionId;
+    });
   }
 
   Future<ParsedFinancialEvent?> getParsedFinancialEvent(int id) async {

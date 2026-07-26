@@ -15,6 +15,7 @@ class RawNotificationEvent {
     required this.parserVersion,
     required this.processingState,
     this.structuralFingerprint,
+    this.supersedesEventId,
   });
 
   final int? id;
@@ -30,6 +31,7 @@ class RawNotificationEvent {
   final int parserVersion;
   final RawNotificationProcessingState processingState;
   final String? structuralFingerprint;
+  final int? supersedesEventId;
 
   Map<String, Object?> toMap() => {
     if (id != null) 'id': id,
@@ -45,6 +47,7 @@ class RawNotificationEvent {
     'parser_version': parserVersion,
     'processing_state': processingState.storageValue,
     'structural_fingerprint': structuralFingerprint,
+    'supersedes_event_id': supersedesEventId,
   };
 
   factory RawNotificationEvent.fromMap(Map<String, Object?> map) {
@@ -64,6 +67,17 @@ class RawNotificationEvent {
         map['processing_state'] as String,
       ),
       structuralFingerprint: map['structural_fingerprint'] as String?,
+      supersedesEventId: map['supersedes_event_id'] as int?,
     );
   }
+}
+
+class RawNotificationInsertResult {
+  const RawNotificationInsertResult({
+    required this.event,
+    required this.wasInserted,
+  });
+
+  final RawNotificationEvent event;
+  final bool wasInserted;
 }

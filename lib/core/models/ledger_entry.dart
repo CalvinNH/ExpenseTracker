@@ -5,6 +5,7 @@ class LedgerEntry {
     this.id,
     this.transactionGroupId,
     this.parsedFinancialEventId,
+    this.legacyTransactionId,
     required this.accountId,
     required this.direction,
     required this.amountMinor,
@@ -20,6 +21,7 @@ class LedgerEntry {
   final int? id;
   final int? transactionGroupId;
   final int? parsedFinancialEventId;
+  final int? legacyTransactionId;
   final int accountId;
   final FinancialDirection direction;
   final int amountMinor;
@@ -35,6 +37,7 @@ class LedgerEntry {
     if (id != null) 'id': id,
     'transaction_group_id': transactionGroupId,
     'parsed_financial_event_id': parsedFinancialEventId,
+    'legacy_transaction_id': legacyTransactionId,
     'account_id': accountId,
     'direction': direction.storageValue,
     'amount_minor': amountMinor,
@@ -52,6 +55,7 @@ class LedgerEntry {
       id: map['id'] as int?,
       transactionGroupId: map['transaction_group_id'] as int?,
       parsedFinancialEventId: map['parsed_financial_event_id'] as int?,
+      legacyTransactionId: map['legacy_transaction_id'] as int?,
       accountId: map['account_id'] as int,
       direction: FinancialDirection.fromStorage(map['direction'] as String),
       amountMinor: map['amount_minor'] as int,
