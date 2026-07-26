@@ -47,6 +47,7 @@ class AppTheme {
   static const Color borderLight = Color(0xFFE5E7EB);
   static const Color errorRed = Color(0xFFE53935);
   static const Color successGreen = Color(0xFF10B981);
+  static const Color warningAmber = Color(0xFFF59E0B);
 
   // Gradients
   static const LinearGradient primaryGradient = LinearGradient(
@@ -137,9 +138,7 @@ class AppTheme {
       cardTheme: CardThemeData(
         color: surface,
         elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       appBarTheme: AppBarTheme(
         backgroundColor: background,
@@ -150,9 +149,7 @@ class AppTheme {
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: primaryBlue,
         foregroundColor: Colors.white,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: ButtonStyle(

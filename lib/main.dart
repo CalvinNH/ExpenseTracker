@@ -74,11 +74,18 @@ class _AppEntryState extends State<_AppEntry> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.error_outline, size: 56, color: AppTheme.errorRed),
+                    const Icon(
+                      Icons.error_outline,
+                      size: 56,
+                      color: AppTheme.errorRed,
+                    ),
                     const SizedBox(height: 16),
                     const Text(
                       'Could not open database',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Text(

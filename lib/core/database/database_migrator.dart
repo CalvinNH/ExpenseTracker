@@ -165,18 +165,17 @@ class DatabaseMigrator {
   ///
   /// Returns `true` if the database opens successfully and both tables exist
   /// with queryable row counts. Returns `false` on any error.
-  Future<bool> _verifyEncryptedDatabase(
-    String path,
-    String passphrase,
-  ) async {
+  Future<bool> _verifyEncryptedDatabase(String path, String passphrase) async {
     try {
       final db = await openDatabase(path, password: passphrase, readOnly: true);
       try {
         // Verify both tables exist and are queryable
-        final accountResult =
-            await db.rawQuery('SELECT COUNT(*) as cnt FROM accounts');
-        final txnResult =
-            await db.rawQuery('SELECT COUNT(*) as cnt FROM transactions');
+        final accountResult = await db.rawQuery(
+          'SELECT COUNT(*) as cnt FROM accounts',
+        );
+        final txnResult = await db.rawQuery(
+          'SELECT COUNT(*) as cnt FROM transactions',
+        );
 
         // Basic sanity: queries must return results (even if count is 0)
         if (accountResult.isEmpty || txnResult.isEmpty) {

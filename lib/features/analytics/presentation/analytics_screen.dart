@@ -17,27 +17,29 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   bool _isLoading = true;
   List<Transaction> _transactions = [];
   Map<int, String> _accountIdToNameMap = {};
-  Map<int, String> _accountIdToTypeMap = {}; // Maps ID to Wallet/Card type based on name normalization
-  
+  Map<int, String> _accountIdToTypeMap =
+      {}; // Maps ID to Wallet/Card type based on name normalization
+
   // Tab Selection
   String _activeTab = 'Categories'; // 'Categories' or 'Accounts'
   String _selectedFilter = 'This Month';
-  
+
   // Chart interaction
   int _touchedPieIndex = -1;
-  
+
   StreamSubscription? _transactionSubscription;
 
   @override
   void initState() {
     super.initState();
     _loadData();
-    _transactionSubscription =
-        NotificationService.onTransactionIngested.listen((_) {
-      if (mounted) {
-        _loadData();
-      }
-    });
+    _transactionSubscription = NotificationService.onTransactionIngested.listen(
+      (_) {
+        if (mounted) {
+          _loadData();
+        }
+      },
+    );
   }
 
   @override
@@ -81,11 +83,22 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     if (lower == 'cash' || lower.contains('cash')) {
       return 'Cash Wallet';
     }
-    
+
     final cardKeywords = [
-      'credit card', 'cc', 'card', 'credit', 'visa', 'mastercard',
-      'amex', 'rupay', 'diners', 'discover', 'platina', 'signature',
-      'infinite', 'onecard'
+      'credit card',
+      'cc',
+      'card',
+      'credit',
+      'visa',
+      'mastercard',
+      'amex',
+      'rupay',
+      'diners',
+      'discover',
+      'platina',
+      'signature',
+      'infinite',
+      'onecard',
     ];
 
     if (cardKeywords.any((keyword) => lower.contains(keyword))) {
@@ -104,45 +117,65 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     DateTime lastPeriodStartDate;
     DateTime lastPeriodEndDate;
     String labelLastPeriod = 'vs last month';
-    
+
     if (_selectedFilter == 'Last 3 months') {
       filterStartDate = DateTime(now.year, now.month - 3, now.day);
       lastPeriodStartDate = DateTime(now.year, now.month - 6, now.day);
-      lastPeriodEndDate = filterStartDate.subtract(const Duration(microseconds: 1));
+      lastPeriodEndDate = filterStartDate.subtract(
+        const Duration(microseconds: 1),
+      );
       labelLastPeriod = 'vs previous 3m';
     } else if (_selectedFilter == 'Last year') {
       filterStartDate = DateTime(now.year - 1, now.month, now.day);
       lastPeriodStartDate = DateTime(now.year - 2, now.month, now.day);
-      lastPeriodEndDate = filterStartDate.subtract(const Duration(microseconds: 1));
+      lastPeriodEndDate = filterStartDate.subtract(
+        const Duration(microseconds: 1),
+      );
       labelLastPeriod = 'vs previous year';
     } else {
       // Default: 'This Month' (same as 'This month')
       filterStartDate = DateTime(now.year, now.month, 1);
       lastPeriodStartDate = DateTime(now.year, now.month - 1, 1);
-      lastPeriodEndDate = filterStartDate.subtract(const Duration(microseconds: 1));
+      lastPeriodEndDate = filterStartDate.subtract(
+        const Duration(microseconds: 1),
+      );
       labelLastPeriod = 'vs last month';
     }
 
     final currentMonthExpenses = _transactions.where((txn) {
       return txn.type == TransactionType.debit &&
-          txn.timestamp.isAfter(filterStartDate.subtract(const Duration(microseconds: 1))) &&
+          txn.timestamp.isAfter(
+            filterStartDate.subtract(const Duration(microseconds: 1)),
+          ) &&
           txn.timestamp.isBefore(now.add(const Duration(days: 1)));
     }).toList();
 
-    final totalSpentThisMonth = currentMonthExpenses.fold<double>(0.0, (sum, txn) => sum + txn.amount);
+    final totalSpentThisMonth = currentMonthExpenses.fold<double>(
+      0.0,
+      (sum, txn) => sum + txn.amount,
+    );
 
     final lastMonthExpenses = _transactions.where((txn) {
       return txn.type == TransactionType.debit &&
-          txn.timestamp.isAfter(lastPeriodStartDate.subtract(const Duration(microseconds: 1))) &&
-          txn.timestamp.isBefore(lastPeriodEndDate.add(const Duration(microseconds: 1)));
+          txn.timestamp.isAfter(
+            lastPeriodStartDate.subtract(const Duration(microseconds: 1)),
+          ) &&
+          txn.timestamp.isBefore(
+            lastPeriodEndDate.add(const Duration(microseconds: 1)),
+          );
     }).toList();
 
-    final totalSpentLastMonth = lastMonthExpenses.fold<double>(0.0, (sum, txn) => sum + txn.amount);
-    
+    final totalSpentLastMonth = lastMonthExpenses.fold<double>(
+      0.0,
+      (sum, txn) => sum + txn.amount,
+    );
+
     double percentChange = 0.0;
     bool isIncrease = true;
     if (totalSpentLastMonth > 0) {
-      percentChange = ((totalSpentThisMonth - totalSpentLastMonth) / totalSpentLastMonth) * 100;
+      percentChange =
+          ((totalSpentThisMonth - totalSpentLastMonth) / totalSpentLastMonth) *
+          100;
       isIncrease = percentChange >= 0;
       percentChange = percentChange.abs();
     } else if (totalSpentThisMonth > 0) {
@@ -153,7 +186,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     // Category breakdown
     final Map<String, double> categoryTotals = {};
     for (final txn in currentMonthExpenses) {
-      categoryTotals[txn.category] = (categoryTotals[txn.category] ?? 0.0) + txn.amount;
+      categoryTotals[txn.category] =
+          (categoryTotals[txn.category] ?? 0.0) + txn.amount;
     }
     final sortedCategories = categoryTotals.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -162,8 +196,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final Map<int, double> accountTotals = {};
     final Map<int, int> accountTxnCounts = {};
     for (final txn in currentMonthExpenses) {
-      accountTotals[txn.accountId] = (accountTotals[txn.accountId] ?? 0.0) + txn.amount;
-      accountTxnCounts[txn.accountId] = (accountTxnCounts[txn.accountId] ?? 0) + 1;
+      accountTotals[txn.accountId] =
+          (accountTotals[txn.accountId] ?? 0.0) + txn.amount;
+      accountTxnCounts[txn.accountId] =
+          (accountTxnCounts[txn.accountId] ?? 0) + 1;
     }
 
     return Scaffold(
@@ -196,22 +232,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               _touchedPieIndex = -1;
                             });
                           },
-                          itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                            const PopupMenuItem<String>(
-                              value: 'This Month',
-                              child: Text('This Month'),
-                            ),
-                            const PopupMenuItem<String>(
-                              value: 'Last 3 months',
-                              child: Text('Last 3 months'),
-                            ),
-                            const PopupMenuItem<String>(
-                              value: 'Last year',
-                              child: Text('Last year'),
-                            ),
-                          ],
+                          itemBuilder: (BuildContext context) =>
+                              <PopupMenuEntry<String>>[
+                                const PopupMenuItem<String>(
+                                  value: 'This Month',
+                                  child: Text('This Month'),
+                                ),
+                                const PopupMenuItem<String>(
+                                  value: 'Last 3 months',
+                                  child: Text('Last 3 months'),
+                                ),
+                                const PopupMenuItem<String>(
+                                  value: 'Last year',
+                                  child: Text('Last year'),
+                                ),
+                              ],
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               border: Border.all(color: AppTheme.borderLight),
                               borderRadius: BorderRadius.circular(20),
@@ -287,9 +327,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                             ),
                           ),
                           const SizedBox(height: 12),
-                          if (totalSpentThisMonth > 0 || totalSpentLastMonth > 0)
+                          if (totalSpentThisMonth > 0 ||
+                              totalSpentLastMonth > 0)
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.white.withOpacity(0.15),
                                 borderRadius: BorderRadius.circular(12),
@@ -298,7 +342,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(
-                                    isIncrease ? Icons.arrow_upward : Icons.arrow_downward,
+                                    isIncrease
+                                        ? Icons.arrow_upward
+                                        : Icons.arrow_downward,
                                     size: 14,
                                     color: Colors.white,
                                   ),
@@ -339,15 +385,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               },
                               child: Container(
                                 decoration: BoxDecoration(
-                                  color: _activeTab == 'Categories' ? Colors.white : Colors.transparent,
+                                  color: _activeTab == 'Categories'
+                                      ? Colors.white
+                                      : Colors.transparent,
                                   borderRadius: BorderRadius.circular(20),
-                                  boxShadow: _activeTab == 'Categories' ? AppTheme.cardShadow : null,
+                                  boxShadow: _activeTab == 'Categories'
+                                      ? AppTheme.cardShadow
+                                      : null,
                                 ),
                                 alignment: Alignment.center,
                                 child: Text(
                                   'Categories',
                                   style: TextStyle(
-                                    color: _activeTab == 'Categories' ? AppTheme.textDark : AppTheme.textMuted,
+                                    color: _activeTab == 'Categories'
+                                        ? AppTheme.textDark
+                                        : AppTheme.textMuted,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 14,
                                   ),
@@ -365,15 +417,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               },
                               child: Container(
                                 decoration: BoxDecoration(
-                                  color: _activeTab == 'Accounts' ? Colors.white : Colors.transparent,
+                                  color: _activeTab == 'Accounts'
+                                      ? Colors.white
+                                      : Colors.transparent,
                                   borderRadius: BorderRadius.circular(20),
-                                  boxShadow: _activeTab == 'Accounts' ? AppTheme.cardShadow : null,
+                                  boxShadow: _activeTab == 'Accounts'
+                                      ? AppTheme.cardShadow
+                                      : null,
                                 ),
                                 alignment: Alignment.center,
                                 child: Text(
                                   'Accounts',
                                   style: TextStyle(
-                                    color: _activeTab == 'Accounts' ? AppTheme.textDark : AppTheme.textMuted,
+                                    color: _activeTab == 'Accounts'
+                                        ? AppTheme.textDark
+                                        : AppTheme.textMuted,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 14,
                                   ),
@@ -388,13 +446,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
                     // Active Tab Content
                     if (_activeTab == 'Categories') ...[
-                      _buildSpendingByCategorySection(totalSpentThisMonth, sortedCategories),
+                      _buildSpendingByCategorySection(
+                        totalSpentThisMonth,
+                        sortedCategories,
+                      ),
                       const SizedBox(height: 24),
-                      _buildByAccountSection(totalSpentThisMonth, accountTotals, accountTxnCounts),
+                      _buildByAccountSection(
+                        totalSpentThisMonth,
+                        accountTotals,
+                        accountTxnCounts,
+                      ),
                     ] else ...[
-                      _buildSpendingByAccountSection(totalSpentThisMonth, accountTotals),
+                      _buildSpendingByAccountSection(
+                        totalSpentThisMonth,
+                        accountTotals,
+                      ),
                       const SizedBox(height: 24),
-                      _buildByCategorySection(totalSpentThisMonth, sortedCategories),
+                      _buildByCategorySection(
+                        totalSpentThisMonth,
+                        sortedCategories,
+                      ),
                     ],
 
                     const SizedBox(height: 120),
@@ -406,7 +477,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   // --- RENDERING CATEGORIES VISUALIZATION ---
-  Widget _buildSpendingByCategorySection(double totalSpent, List<MapEntry<String, double>> sortedCategories) {
+  Widget _buildSpendingByCategorySection(
+    double totalSpent,
+    List<MapEntry<String, double>> sortedCategories,
+  ) {
     if (totalSpent == 0) return _buildNoSpendingCard();
 
     return Column(
@@ -440,17 +514,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       PieChart(
                         PieChartData(
                           pieTouchData: PieTouchData(
-                            touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                              setState(() {
-                                if (!event.isInterestedForInteractions ||
-                                    pieTouchResponse == null ||
-                                    pieTouchResponse.touchedSection == null) {
-                                  _touchedPieIndex = -1;
-                                  return;
-                                }
-                                _touchedPieIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
-                              });
-                            },
+                            touchCallback:
+                                (FlTouchEvent event, pieTouchResponse) {
+                                  setState(() {
+                                    if (!event.isInterestedForInteractions ||
+                                        pieTouchResponse == null ||
+                                        pieTouchResponse.touchedSection ==
+                                            null) {
+                                      _touchedPieIndex = -1;
+                                      return;
+                                    }
+                                    _touchedPieIndex = pieTouchResponse
+                                        .touchedSection!
+                                        .touchedSectionIndex;
+                                  });
+                                },
                           ),
                           borderData: FlBorderData(show: false),
                           sectionsSpace: 4,
@@ -560,7 +638,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   // --- RENDERING ACCOUNTS VISUALIZATION ---
-  Widget _buildSpendingByAccountSection(double totalSpent, Map<int, double> accountTotals) {
+  Widget _buildSpendingByAccountSection(
+    double totalSpent,
+    Map<int, double> accountTotals,
+  ) {
     if (totalSpent == 0) return _buildNoSpendingCard();
 
     final sortedAccounts = accountTotals.entries.toList()
@@ -597,17 +678,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       PieChart(
                         PieChartData(
                           pieTouchData: PieTouchData(
-                            touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                              setState(() {
-                                if (!event.isInterestedForInteractions ||
-                                    pieTouchResponse == null ||
-                                    pieTouchResponse.touchedSection == null) {
-                                  _touchedPieIndex = -1;
-                                  return;
-                                }
-                                _touchedPieIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
-                              });
-                            },
+                            touchCallback:
+                                (FlTouchEvent event, pieTouchResponse) {
+                                  setState(() {
+                                    if (!event.isInterestedForInteractions ||
+                                        pieTouchResponse == null ||
+                                        pieTouchResponse.touchedSection ==
+                                            null) {
+                                      _touchedPieIndex = -1;
+                                      return;
+                                    }
+                                    _touchedPieIndex = pieTouchResponse
+                                        .touchedSection!
+                                        .touchedSectionIndex;
+                                  });
+                                },
                           ),
                           borderData: FlBorderData(show: false),
                           sectionsSpace: 4,
@@ -622,7 +707,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               AppTheme.coralAccent,
                               const Color(0xFF10B981),
                               const Color(0xFFF59E0B),
-                              const Color(0xFF8B5CF6)
+                              const Color(0xFF8B5CF6),
                             ];
                             return PieChartSectionData(
                               color: accColors[i % accColors.length],
@@ -675,7 +760,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       AppTheme.coralAccent,
                       const Color(0xFF10B981),
                       const Color(0xFFF59E0B),
-                      const Color(0xFF8B5CF6)
+                      const Color(0xFF8B5CF6),
                     ];
 
                     return Padding(
@@ -732,7 +817,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   // --- BY ACCOUNT SECTION (shows account lists with progress bars) ---
-  Widget _buildByAccountSection(double totalSpent, Map<int, double> accountTotals, Map<int, int> accountTxnCounts) {
+  Widget _buildByAccountSection(
+    double totalSpent,
+    Map<int, double> accountTotals,
+    Map<int, int> accountTxnCounts,
+  ) {
     final accountIds = _accountIdToNameMap.keys.toList();
 
     return Column(
@@ -770,9 +859,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               final accType = _accountIdToTypeMap[id] ?? 'Bank Account';
               final spent = accountTotals[id] ?? 0.0;
               final count = accountTxnCounts[id] ?? 0;
-              
+
               final proportion = totalSpent > 0 ? (spent / totalSpent) : 0.0;
-              
+
               // Icon selector
               IconData accIcon = Icons.account_balance_wallet_rounded;
               Color iconBg = AppTheme.primaryBlue.withOpacity(0.12);
@@ -785,7 +874,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               }
 
               return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 12,
+                ),
                 child: Column(
                   children: [
                     Row(
@@ -797,11 +889,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                             color: iconBg,
                             shape: BoxShape.circle,
                           ),
-                          child: Icon(
-                            accIcon,
-                            color: iconColor,
-                            size: 24,
-                          ),
+                          child: Icon(accIcon, color: iconColor, size: 24),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
@@ -818,7 +906,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                count == 0 ? 'No expenses' : '$count transaction${count > 1 ? "s" : ""}',
+                                count == 0
+                                    ? 'No expenses'
+                                    : '$count transaction${count > 1 ? "s" : ""}',
                                 style: const TextStyle(
                                   color: AppTheme.textMuted,
                                   fontSize: 12,
@@ -846,7 +936,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         child: LinearProgressIndicator(
                           value: proportion,
                           backgroundColor: AppTheme.borderLight,
-                          valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.coralAccent),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            AppTheme.coralAccent,
+                          ),
                           minHeight: 6,
                         ),
                       ),
@@ -862,7 +954,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   // --- BY CATEGORY LIST SECTION (when Accounts tab is active) ---
-  Widget _buildByCategorySection(double totalSpent, List<MapEntry<String, double>> sortedCategories) {
+  Widget _buildByCategorySection(
+    double totalSpent,
+    List<MapEntry<String, double>> sortedCategories,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -900,7 +995,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               final catColor = AppTheme.getCategoryColor(category);
 
               return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 12,
+                ),
                 child: Column(
                   children: [
                     Row(

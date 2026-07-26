@@ -149,7 +149,11 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
     final parsed = NotificationParser.parse('SMS', text);
     if (parsed == null) {
       if (mounted) {
-        AppToast.show(context, 'Could not parse transaction from pasted text', isError: true);
+        AppToast.show(
+          context,
+          'Could not parse transaction from pasted text',
+          isError: true,
+        );
       }
       return;
     }
@@ -247,12 +251,17 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                       title: Text(
                         cat,
                         style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: isSelected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                           color: AppTheme.textDark,
                         ),
                       ),
                       trailing: isSelected
-                          ? const Icon(Icons.check_circle_rounded, color: AppTheme.primaryBlue)
+                          ? const Icon(
+                              Icons.check_circle_rounded,
+                              color: AppTheme.primaryBlue,
+                            )
                           : null,
                       onTap: () {
                         setState(() => _selectedCategory = cat);
@@ -312,32 +321,43 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                     itemBuilder: (context, index) {
                       final acc = _accounts[index];
                       final isSelected = acc.id == _selectedAccountId;
-                      final isCard = acc.bankName.toLowerCase().contains('card') || 
-                                     acc.bankName.toLowerCase().contains('cc');
+                      final isCard =
+                          acc.bankName.toLowerCase().contains('card') ||
+                          acc.bankName.toLowerCase().contains('cc');
 
                       return ListTile(
                         leading: Container(
                           width: 36,
                           height: 36,
                           decoration: BoxDecoration(
-                            color: (isCard ? Colors.grey : AppTheme.primaryBlue).withOpacity(0.12),
+                            color: (isCard ? Colors.grey : AppTheme.primaryBlue)
+                                .withOpacity(0.12),
                             shape: BoxShape.circle,
                           ),
                           child: Icon(
-                            isCard ? Icons.credit_card_rounded : Icons.account_balance_wallet_rounded,
-                            color: isCard ? Colors.grey[700] : AppTheme.primaryBlue,
+                            isCard
+                                ? Icons.credit_card_rounded
+                                : Icons.account_balance_wallet_rounded,
+                            color: isCard
+                                ? Colors.grey[700]
+                                : AppTheme.primaryBlue,
                             size: 18,
                           ),
                         ),
                         title: Text(
                           acc.bankName,
                           style: TextStyle(
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            fontWeight: isSelected
+                                ? FontWeight.bold
+                                : FontWeight.normal,
                             color: AppTheme.textDark,
                           ),
                         ),
                         trailing: isSelected
-                            ? const Icon(Icons.check_circle_rounded, color: AppTheme.primaryBlue)
+                            ? const Icon(
+                                Icons.check_circle_rounded,
+                                color: AppTheme.primaryBlue,
+                              )
                             : null,
                         onTap: () {
                           setState(() => _selectedAccountId = acc.id);
@@ -408,7 +428,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
         surfaceTintColor: Colors.transparent,
         title: const Text(
           'Delete Transaction',
-          style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.textDark),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: AppTheme.textDark,
+          ),
         ),
         content: const Text(
           'This will reverse the balance effect and permanently remove this transaction. Continue?',
@@ -432,7 +455,9 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
 
     setState(() => _isSaving = true);
     try {
-      await AppDatabase.instance.deleteTransaction(widget.existingTransaction!.id!);
+      await AppDatabase.instance.deleteTransaction(
+        widget.existingTransaction!.id!,
+      );
       NotificationService.notifyTransactionIngested();
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
@@ -445,11 +470,26 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
 
   String _formatSelectedDate(DateTime dt) {
     final day = dt.day.toString().padLeft(2, '0');
-    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     final year = dt.year;
     final minute = dt.minute.toString().padLeft(2, '0');
     final period = dt.hour >= 12 ? 'PM' : 'AM';
-    final formatHour = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+    final formatHour = dt.hour > 12
+        ? dt.hour - 12
+        : (dt.hour == 0 ? 12 : dt.hour);
     return '$day ${months[dt.month - 1]} $year · ${formatHour.toString().padLeft(2, '0')}:$minute $period';
   }
 
@@ -457,11 +497,13 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
-    
-    final selectedAccName = _accounts.firstWhere(
-      (a) => a.id == _selectedAccountId,
-      orElse: () => const Account(bankName: 'Select Account', currentBalance: 0),
-    ).bankName;
+
+    final selectedAccName = _accounts
+        .firstWhere(
+          (a) => a.id == _selectedAccountId,
+          orElse: () => Account(bankName: 'Select Account', currentBalance: 0),
+        )
+        .bankName;
 
     return Container(
       decoration: const BoxDecoration(
@@ -543,7 +585,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   onTap: _pasteAndParseSmsText,
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: AppTheme.primaryBlue.withOpacity(0.08),
                       borderRadius: BorderRadius.circular(12),
@@ -588,10 +633,14 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   children: [
                     Expanded(
                       child: GestureDetector(
-                        onTap: () => setState(() => _selectedType = TransactionType.debit),
+                        onTap: () => setState(
+                          () => _selectedType = TransactionType.debit,
+                        ),
                         child: Container(
                           decoration: BoxDecoration(
-                            color: _selectedType == TransactionType.debit ? AppTheme.textDark : Colors.transparent,
+                            color: _selectedType == TransactionType.debit
+                                ? AppTheme.textDark
+                                : Colors.transparent,
                             borderRadius: BorderRadius.circular(20),
                           ),
                           alignment: Alignment.center,
@@ -599,12 +648,18 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               if (_selectedType == TransactionType.debit)
-                                const Icon(Icons.check_rounded, color: Colors.white, size: 16),
+                                const Icon(
+                                  Icons.check_rounded,
+                                  color: Colors.white,
+                                  size: 16,
+                                ),
                               const SizedBox(width: 4),
                               Text(
                                 'Expense',
                                 style: TextStyle(
-                                  color: _selectedType == TransactionType.debit ? Colors.white : AppTheme.textMuted,
+                                  color: _selectedType == TransactionType.debit
+                                      ? Colors.white
+                                      : AppTheme.textMuted,
                                   fontWeight: FontWeight.bold,
                                   fontSize: 14,
                                 ),
@@ -616,10 +671,14 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                     ),
                     Expanded(
                       child: GestureDetector(
-                        onTap: () => setState(() => _selectedType = TransactionType.credit),
+                        onTap: () => setState(
+                          () => _selectedType = TransactionType.credit,
+                        ),
                         child: Container(
                           decoration: BoxDecoration(
-                            color: _selectedType == TransactionType.credit ? AppTheme.textDark : Colors.transparent,
+                            color: _selectedType == TransactionType.credit
+                                ? AppTheme.textDark
+                                : Colors.transparent,
                             borderRadius: BorderRadius.circular(20),
                           ),
                           alignment: Alignment.center,
@@ -627,12 +686,18 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               if (_selectedType == TransactionType.credit)
-                                const Icon(Icons.check_rounded, color: Colors.white, size: 16),
+                                const Icon(
+                                  Icons.check_rounded,
+                                  color: Colors.white,
+                                  size: 16,
+                                ),
                               const SizedBox(width: 4),
                               Text(
                                 'Income',
                                 style: TextStyle(
-                                  color: _selectedType == TransactionType.credit ? Colors.white : AppTheme.textMuted,
+                                  color: _selectedType == TransactionType.credit
+                                      ? Colors.white
+                                      : AppTheme.textMuted,
                                   fontWeight: FontWeight.bold,
                                   fontSize: 14,
                                 ),
@@ -679,7 +744,9 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   ),
                   border: InputBorder.none,
                 ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
                 inputFormatters: [
                   FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
                 ],
@@ -695,10 +762,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
               ),
               const Text(
                 'Enter the transaction amount',
-                style: TextStyle(
-                  color: AppTheme.textMuted,
-                  fontSize: 11,
-                ),
+                style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
               ),
               const SizedBox(height: 24),
 
@@ -709,7 +773,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   borderRadius: BorderRadius.circular(16),
                   boxShadow: AppTheme.cardShadow,
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Row(
                   children: [
                     Expanded(
@@ -740,10 +807,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                     const SizedBox(width: 8),
                     const Text(
                       'Merchant or Description',
-                      style: TextStyle(
-                        color: AppTheme.textMuted,
-                        fontSize: 12,
-                      ),
+                      style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
                     ),
                   ],
                 ),
@@ -759,7 +823,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: AppTheme.cardShadow,
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 16,
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -769,12 +836,16 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                             width: 32,
                             height: 32,
                             decoration: BoxDecoration(
-                              color: AppTheme.getCategoryColor(_selectedCategory).withOpacity(0.12),
+                              color: AppTheme.getCategoryColor(
+                                _selectedCategory,
+                              ).withOpacity(0.12),
                               shape: BoxShape.circle,
                             ),
                             child: Icon(
                               AppTheme.getCategoryIcon(_selectedCategory),
-                              color: AppTheme.getCategoryColor(_selectedCategory),
+                              color: AppTheme.getCategoryColor(
+                                _selectedCategory,
+                              ),
                               size: 16,
                             ),
                           ),
@@ -793,10 +864,16 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                         children: [
                           Text(
                             'Category',
-                            style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
                           ),
                           SizedBox(width: 4),
-                          Icon(Icons.keyboard_arrow_down_rounded, color: AppTheme.textMuted),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: AppTheme.textMuted,
+                          ),
                         ],
                       ),
                     ],
@@ -816,7 +893,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                           borderRadius: BorderRadius.circular(16),
                           boxShadow: AppTheme.cardShadow,
                         ),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 16,
+                        ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -826,7 +906,9 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                                   width: 32,
                                   height: 32,
                                   decoration: BoxDecoration(
-                                    color: AppTheme.primaryBlue.withOpacity(0.12),
+                                    color: AppTheme.primaryBlue.withOpacity(
+                                      0.12,
+                                    ),
                                     shape: BoxShape.circle,
                                   ),
                                   child: const Icon(
@@ -850,10 +932,16 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                               children: [
                                 Text(
                                   'Account',
-                                  style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                                  style: TextStyle(
+                                    color: AppTheme.textMuted,
+                                    fontSize: 12,
+                                  ),
                                 ),
                                 SizedBox(width: 4),
-                                Icon(Icons.keyboard_arrow_down_rounded, color: AppTheme.textMuted),
+                                Icon(
+                                  Icons.keyboard_arrow_down_rounded,
+                                  color: AppTheme.textMuted,
+                                ),
                               ],
                             ),
                           ],
@@ -871,7 +959,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: AppTheme.cardShadow,
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 16,
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -905,10 +996,16 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                         children: [
                           Text(
                             'Date and Time',
-                            style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
                           ),
                           SizedBox(width: 4),
-                          Icon(Icons.keyboard_arrow_down_rounded, color: AppTheme.textMuted),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: AppTheme.textMuted,
+                          ),
                         ],
                       ),
                     ],
@@ -942,7 +1039,9 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                       : Text(
                           _isEditing
                               ? 'Update'
-                              : (_selectedType == TransactionType.debit ? 'Add expense' : 'Add income'),
+                              : (_selectedType == TransactionType.debit
+                                    ? 'Add expense'
+                                    : 'Add income'),
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,

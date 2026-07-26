@@ -2,7 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 class AppToast {
-  static void show(BuildContext context, String message, {bool isError = false}) {
+  static void show(
+    BuildContext context,
+    String message, {
+    bool isError = false,
+  }) {
     final overlay = Overlay.of(context);
     late OverlayEntry entry;
 
@@ -16,7 +20,9 @@ class AppToast {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: isError ? const Color(0xFFEF4444) : const Color(0xFF10B981),
+                color: isError
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF10B981),
                 borderRadius: BorderRadius.circular(8),
                 boxShadow: [
                   BoxShadow(

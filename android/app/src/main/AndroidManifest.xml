@@ -41,6 +41,14 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+        <receiver
+            android:name=".NotificationQueueReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="slayer.notification.listener.service.intent" />
+            </intent-filter>
+        </receiver>
         <!-- END_STREAMING_CHUNK -->
     </application>
     <!-- Required to query activities that can process text, see:

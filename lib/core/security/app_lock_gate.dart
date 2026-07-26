@@ -14,8 +14,7 @@ class AppLockGate extends StatefulWidget {
   State<AppLockGate> createState() => _AppLockGateState();
 }
 
-class _AppLockGateState extends State<AppLockGate>
-    with WidgetsBindingObserver {
+class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
   final LocalAuthentication _auth = LocalAuthentication();
   bool _unlocked = false;
   bool _authInProgress = false;
@@ -23,7 +22,8 @@ class _AppLockGateState extends State<AppLockGate>
   @override
   void initState() {
     super.initState();
-    final isTest = WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
+    final isTest =
+        WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
         Platform.environment.containsKey('FLUTTER_TEST');
     if (isTest) {
       _unlocked = true;
@@ -48,14 +48,10 @@ class _AppLockGateState extends State<AppLockGate>
 
     // Re-lock on backgrounding — but not when the pause is caused by
     // the system auth prompt itself (_authInProgress guard).
-    if (state == AppLifecycleState.paused &&
-        !_authInProgress &&
-        _unlocked) {
+    if (state == AppLifecycleState.paused && !_authInProgress && _unlocked) {
       setState(() => _unlocked = false);
     }
-    if (state == AppLifecycleState.resumed &&
-        !_unlocked &&
-        !_authInProgress) {
+    if (state == AppLifecycleState.resumed && !_unlocked && !_authInProgress) {
       _authenticate();
     }
   }
@@ -99,7 +95,11 @@ class _AppLockGateState extends State<AppLockGate>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.lock_rounded, size: 48, color: Color(0xFF0044FF)),
+                  const Icon(
+                    Icons.lock_rounded,
+                    size: 48,
+                    color: Color(0xFF0044FF),
+                  ),
                   const SizedBox(height: 16),
                   const Text(
                     'Expense Tracker is locked',

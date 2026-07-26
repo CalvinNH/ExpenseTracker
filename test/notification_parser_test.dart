@@ -15,7 +15,10 @@ void main() {
       expect(parsed.type, TransactionType.debit);
       expect(parsed.merchant, 'Starbucks');
       expect(parsed.category, 'Food & Dining');
-      expect(parsed.bankName, 'Unknown Bank'); // No bank specified in text except a/c ending
+      expect(
+        parsed.bankName,
+        'Unknown Bank',
+      ); // No bank specified in text except a/c ending
     });
 
     test('Debit test with at prefix and SBI bank prefix', () {
@@ -89,11 +92,28 @@ void main() {
     });
 
     test('Card ending digits extraction regex tests', () {
-      expect(NotificationParser.extractCardEndingDigits('Card ending 6005'), '6005');
-      expect(NotificationParser.extractCardEndingDigits('Your card XXX1234 spent Rs.100'), '1234');
-      expect(NotificationParser.extractCardEndingDigits('Account XXX672345 debited'), '2345');
-      expect(NotificationParser.extractCardEndingDigits('A/c ...5678 credited'), '5678');
-      expect(NotificationParser.extractCardEndingDigits('No card digits here'), isNull);
+      expect(
+        NotificationParser.extractCardEndingDigits('Card ending 6005'),
+        '6005',
+      );
+      expect(
+        NotificationParser.extractCardEndingDigits(
+          'Your card XXX1234 spent Rs.100',
+        ),
+        '1234',
+      );
+      expect(
+        NotificationParser.extractCardEndingDigits('Account XXX672345 debited'),
+        '2345',
+      );
+      expect(
+        NotificationParser.extractCardEndingDigits('A/c ...5678 credited'),
+        '5678',
+      );
+      expect(
+        NotificationParser.extractCardEndingDigits('No card digits here'),
+        isNull,
+      );
     });
 
     test('Non-transaction notification should return null', () {
@@ -103,6 +123,50 @@ void main() {
       );
 
       expect(parsed, isNull);
+    });
+
+    test('OTP notification containing an amount is ignored', () {
+      final parsed = NotificationParser.parse(
+        'ICICI Bank OTP',
+        'OTP 123456 is for txn of INR 4,999.00 at AMAZON. Do not share it.',
+      );
+
+      expect(parsed, isNull);
+    });
+
+    test('Balance summary containing an amount is ignored', () {
+      final parsed = NotificationParser.parse(
+        'SBI Balance',
+        'Available balance in your account is INR 18,245.20.',
+      );
+
+      expect(parsed, isNull);
+    });
+
+    test('Parses multi-word merchant and masked account suffix', () {
+      final parsed = NotificationParser.parse(
+        'HDFC Bank',
+        'Rs 1,249.50 debited from A/c XX672345 at Reliance Fresh Market '
+            'on 24-07-2026. Avl bal Rs 8,000.00',
+      );
+
+      expect(parsed, isNotNull);
+      expect(parsed!.amount, 1249.50);
+      expect(parsed.type, TransactionType.debit);
+      expect(parsed.merchant, 'Reliance Fresh Market');
+      expect(parsed.cardEnding, '2345');
+    });
+
+    test('Parses refund as credit even when original debit is mentioned', () {
+      final parsed = NotificationParser.parse(
+        'Axis Bank',
+        '₹750.00 refunded to Axis Bank card XX9911 for debit transaction '
+            'at Myntra.',
+      );
+
+      expect(parsed, isNotNull);
+      expect(parsed!.type, TransactionType.credit);
+      expect(parsed.cardEnding, '9911');
     });
 
     test('Known merchant fallback without prefix', () {
@@ -131,25 +195,43 @@ void main() {
       expect(parsed, isNull);
     });
 
-    test('Heuristics category matches mixed casing, trailing spaces and unmatched fallback', () {
-      // 1. Food & Dining (mixed casing, spaces)
-      expect(NotificationParser.categorizeMerchant('   ZoMaTo  '), 'Food & Dining');
-      // 2. Travel & Transport (mixed casing, spaces)
-      expect(NotificationParser.categorizeMerchant('  uBeR '), 'Travel & Transport');
-      // 3. Bills & Utilities (mixed casing, spaces)
-      expect(NotificationParser.categorizeMerchant(' nEtFlIx  '), 'Bills & Utilities');
-      // 4. Shopping (mixed casing, spaces)
-      expect(NotificationParser.categorizeMerchant('  aMaZoN   '), 'Shopping');
-      // 5. Rent (mixed casing, spaces)
-      expect(NotificationParser.categorizeMerchant(' rEnT '), 'Rent');
-      // 6. Salary (mixed casing, spaces)
-      expect(NotificationParser.categorizeMerchant(' SaLaRy '), 'Salary');
-      // 7. Others (payment gateway fallback)
-      expect(NotificationParser.categorizeMerchant(' Paytm '), 'Others');
-      expect(NotificationParser.categorizeMerchant(' Gpay '), 'Others');
-      // 8. Others (completely unknown merchant)
-      expect(NotificationParser.categorizeMerchant('SomeRandomMerchantName'), 'Others');
-      expect(NotificationParser.categorizeMerchant(''), 'Others');
-    });
+    test(
+      'Heuristics category matches mixed casing, trailing spaces and unmatched fallback',
+      () {
+        // 1. Food & Dining (mixed casing, spaces)
+        expect(
+          NotificationParser.categorizeMerchant('   ZoMaTo  '),
+          'Food & Dining',
+        );
+        // 2. Travel & Transport (mixed casing, spaces)
+        expect(
+          NotificationParser.categorizeMerchant('  uBeR '),
+          'Travel & Transport',
+        );
+        // 3. Bills & Utilities (mixed casing, spaces)
+        expect(
+          NotificationParser.categorizeMerchant(' nEtFlIx  '),
+          'Bills & Utilities',
+        );
+        // 4. Shopping (mixed casing, spaces)
+        expect(
+          NotificationParser.categorizeMerchant('  aMaZoN   '),
+          'Shopping',
+        );
+        // 5. Rent (mixed casing, spaces)
+        expect(NotificationParser.categorizeMerchant(' rEnT '), 'Rent');
+        // 6. Salary (mixed casing, spaces)
+        expect(NotificationParser.categorizeMerchant(' SaLaRy '), 'Salary');
+        // 7. Others (payment gateway fallback)
+        expect(NotificationParser.categorizeMerchant(' Paytm '), 'Others');
+        expect(NotificationParser.categorizeMerchant(' Gpay '), 'Others');
+        // 8. Others (completely unknown merchant)
+        expect(
+          NotificationParser.categorizeMerchant('SomeRandomMerchantName'),
+          'Others',
+        );
+        expect(NotificationParser.categorizeMerchant(''), 'Others');
+      },
+    );
   });
 }

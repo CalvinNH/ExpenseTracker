@@ -70,7 +70,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }).toList();
 
     if (accountsToSave.isEmpty) {
-      AppToast.show(context, 'Add at least one account to continue', isError: true);
+      AppToast.show(
+        context,
+        'Add at least one account to continue',
+        isError: true,
+      );
       return;
     }
 
@@ -87,7 +91,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         if (entry.selectedType == 'Card') {
           final ending = entry.cardEndingController.text.trim();
           final lower = name.toLowerCase();
-          if (!lower.contains('card') && !lower.contains('cc') && !lower.contains('credit')) {
+          if (!lower.contains('card') &&
+              !lower.contains('cc') &&
+              !lower.contains('credit')) {
             name = '$name Credit Card';
           }
           name = '$name ($ending)';
@@ -181,10 +187,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   ),
                   // Lock Badge
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.15)),
+                      border: Border.all(
+                        color: AppTheme.primaryBlue.withOpacity(0.15),
+                      ),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Row(
@@ -262,7 +273,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   borderRadius: BorderRadius.circular(24),
                   boxShadow: AppTheme.cardShadow,
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: Container(
@@ -301,7 +315,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     ),
                     child: Text(
                       _isNotificationPermissionGranted ? 'ENABLED' : 'GRANT',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ),
@@ -350,7 +367,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         child: const Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.add, color: AppTheme.primaryBlue, size: 20),
+                            Icon(
+                              Icons.add,
+                              color: AppTheme.primaryBlue,
+                              size: 20,
+                            ),
                             SizedBox(width: 8),
                             Text(
                               'Add another account',
@@ -486,10 +507,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 child: Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFFF9FAFB),
-                    border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
+                    border: Border.all(
+                      color: const Color(0xFFE5E7EB),
+                      width: 1,
+                    ),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
                   child: TextFormField(
                     controller: entry.nameController,
                     style: const TextStyle(
@@ -499,15 +526,23 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     ),
                     decoration: InputDecoration(
                       labelText: 'Card name',
-                      labelStyle: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                      labelStyle: const TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 12,
+                      ),
                       floatingLabelBehavior: FloatingLabelBehavior.always,
                       hintText: entry.nameHint,
-                      hintStyle: const TextStyle(color: Color(0xFF9CA3AF), fontWeight: FontWeight.normal),
+                      hintStyle: const TextStyle(
+                        color: Color(0xFF9CA3AF),
+                        fontWeight: FontWeight.normal,
+                      ),
                       border: InputBorder.none,
                     ),
                     textCapitalization: TextCapitalization.words,
                     validator: (value) {
-                      final hasAnyName = entry.nameController.text.trim().isNotEmpty;
+                      final hasAnyName = entry.nameController.text
+                          .trim()
+                          .isNotEmpty;
                       final anyFilled =
                           entry.nameController.text.isNotEmpty ||
                           entry.balanceController.text.isNotEmpty ||
@@ -532,10 +567,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 child: Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFFF9FAFB),
-                    border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
+                    border: Border.all(
+                      color: const Color(0xFFE5E7EB),
+                      width: 1,
+                    ),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
                   child: TextFormField(
                     controller: entry.cardEndingController,
                     style: const TextStyle(
@@ -545,18 +586,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     ),
                     decoration: const InputDecoration(
                       labelText: 'Last 4 digits',
-                      labelStyle: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                      labelStyle: TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 12,
+                      ),
                       floatingLabelBehavior: FloatingLabelBehavior.always,
                       hintText: '1234',
-                      hintStyle: TextStyle(color: Color(0xFF9CA3AF), fontWeight: FontWeight.normal),
+                      hintStyle: TextStyle(
+                        color: Color(0xFF9CA3AF),
+                        fontWeight: FontWeight.normal,
+                      ),
                       border: InputBorder.none,
                       counterText: '',
                     ),
                     keyboardType: TextInputType.number,
                     maxLength: 4,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.digitsOnly,
-                    ],
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     validator: (value) {
                       final text = value?.trim() ?? '';
                       final anyFilled =
@@ -596,10 +641,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ),
               decoration: InputDecoration(
                 labelText: 'Account name',
-                labelStyle: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                labelStyle: const TextStyle(
+                  color: AppTheme.textMuted,
+                  fontSize: 12,
+                ),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
                 hintText: entry.nameHint,
-                hintStyle: const TextStyle(color: Color(0xFF9CA3AF), fontWeight: FontWeight.normal),
+                hintStyle: const TextStyle(
+                  color: Color(0xFF9CA3AF),
+                  fontWeight: FontWeight.normal,
+                ),
                 border: InputBorder.none,
               ),
               textCapitalization: TextCapitalization.words,
@@ -648,7 +699,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 fontSize: 16,
               ),
               hintText: '0.00',
-              hintStyle: TextStyle(color: Color(0xFF9CA3AF), fontWeight: FontWeight.normal),
+              hintStyle: TextStyle(
+                color: Color(0xFF9CA3AF),
+                fontWeight: FontWeight.normal,
+              ),
               border: InputBorder.none,
             ),
             keyboardType: const TextInputType.numberWithOptions(

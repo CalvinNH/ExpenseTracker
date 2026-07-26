@@ -32,12 +32,18 @@ class NotificationParser {
   static const double _maxAmount = 10000000;
 
   static ParsedNotification? parse(String title, String content) {
-    final text = '$title $content';
+    final text = _normalizeText('$title $content');
+    if (RegExp(
+      r'\b(otp|one[ -]?time password|verification code)\b',
+      caseSensitive: false,
+    ).hasMatch(text)) {
+      return null;
+    }
 
     // 1. Parse Amount
-    // Regex matches Rs. 500, Rs 500, INR 500, ₹ 500, supports commas and decimals
+    // Supports ₹, Rs/Rs., INR and common optional separators.
     final amountRegex = RegExp(
-      r'(?:Rs\.?|INR|₹)\s*([0-9,]+(?:\.[0-9]+)?)',
+      r'(?:₹|rs\.?|inr)\s*[:\-]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)',
       caseSensitive: false,
     );
     final amountMatch = amountRegex.firstMatch(text);
@@ -55,20 +61,30 @@ class NotificationParser {
     }
 
     // 2. Parse Transaction Type
-    TransactionType type = TransactionType.debit; // Default fallback
-    final creditKeywords = RegExp(r'\b(credited|received|deposit|added|refunded)\b', caseSensitive: false);
-    final debitKeywords = RegExp(r'\b(debited|spent|withdraw|sent|paid|transfer|spent|txn)\b', caseSensitive: false);
+    final creditKeywords = RegExp(
+      r'\b(credited|credit|received|deposited|deposit|added|refunded|refund|cashback|reversed|reversal|cr)\b',
+      caseSensitive: false,
+    );
+    final debitKeywords = RegExp(
+      r'\b(debited|debit|spent|withdrawn|withdrawal|sent|paid|payment|purchased|purchase|deducted|transferred|txn|dr)\b',
+      caseSensitive: false,
+    );
 
-    if (creditKeywords.hasMatch(text)) {
-      type = TransactionType.credit;
-    } else if (debitKeywords.hasMatch(text)) {
-      type = TransactionType.debit;
+    final hasCredit = creditKeywords.hasMatch(text);
+    final hasDebit = debitKeywords.hasMatch(text);
+    if (!hasCredit && !hasDebit) {
+      // Do not turn balance summaries, OTPs, offers, or bill reminders that
+      // merely contain a currency amount into expenses.
+      return null;
     }
+
+    // Reversal/refund notifications often mention the original debit as well.
+    final type = hasCredit ? TransactionType.credit : TransactionType.debit;
 
     // 3. Parse Bank Name
     String bankName = 'Unknown Bank';
     final bankRegex = RegExp(
-      r'\b(HDFC|SBI|ICICI|AXIS|KOTAK|PNB|BOB|YES BANK|CITI|HSBC|PAYTM|GPAY)\b',
+      r'\b(HDFC|SBI|STATE BANK OF INDIA|ICICI|AXIS|KOTAK|PNB|PUNJAB NATIONAL BANK|BOB|BANK OF BARODA|YES BANK|CITI|CITIBANK|HSBC|IDFC|INDUSIND|CANARA|UNION BANK|FEDERAL BANK|RBL|PAYTM|GPAY)\b',
       caseSensitive: false,
     );
     final bankMatch = bankRegex.firstMatch(text);
@@ -79,6 +95,14 @@ class NotificationParser {
         bankName = 'HDFC Bank';
       } else if (matchedBank == 'AXIS') {
         bankName = 'Axis Bank';
+      } else if (matchedBank == 'STATE BANK OF INDIA') {
+        bankName = 'SBI';
+      } else if (matchedBank == 'PUNJAB NATIONAL BANK') {
+        bankName = 'PNB';
+      } else if (matchedBank == 'BANK OF BARODA') {
+        bankName = 'BOB';
+      } else if (matchedBank == 'CITIBANK') {
+        bankName = 'CITI';
       } else {
         bankName = matchedBank;
       }
@@ -86,9 +110,10 @@ class NotificationParser {
 
     // 4. Parse Merchant
     String merchant = 'Unknown';
-    // Look for to/at/for/by/info:/vpa: prefixes followed by alphanumeric words + slashes/hyphens/dots/@
+    // Capture multi-word payee names, UPI references, and VPA identifiers.
+    // Stop before the next piece of banking metadata rather than at a space.
     final merchantRegex = RegExp(
-      r'\b(?:to|at|for|by)\s+([a-zA-Z0-9_/@.\-]+)|\b(?:info:|vpa:)\s*([a-zA-Z0-9_/@.\-]+)',
+      r'\b(?:to|at|for|towards|merchant)\s*[:\-]?\s+([a-zA-Z0-9][a-zA-Z0-9 _/@.&\-]{0,80}?)(?=\s+(?:on|via|using|ref|txn|transaction|avl|available|bal|balance|from|a/c|account|card)\b|[.;,]|$)|\b(?:info|vpa|upi ref)\s*:\s*([a-zA-Z0-9_/@.\-& ]{1,80}?)(?=[.;,]|$)',
       caseSensitive: false,
     );
     final matches = merchantRegex.allMatches(text);
@@ -115,14 +140,41 @@ class NotificationParser {
       }
     } else {
       // Fallback: search for specific known merchants in text to be smarter
+      final upiMatch = RegExp(
+        r'\bUPI[/\-]([A-Za-z][A-Za-z0-9 .&_-]{1,60}?)(?:[/\-]\d+|\s|[.;,]|$)',
+        caseSensitive: false,
+      ).firstMatch(text);
+      if (upiMatch != null && _isValidMerchant(upiMatch.group(1)!)) {
+        merchant = _cleanMerchant(upiMatch.group(1)!);
+      }
+
       final knownMerchants = [
-        'Starbucks', 'Netflix', 'Amazon', 'Flipkart', 'Zomato', 'Swiggy', 
-        'Uber', 'Ola', 'Spotify', 'Jio', 'Airtel', 'McDonalds', 'Google'
+        'Starbucks',
+        'Netflix',
+        'Amazon',
+        'Flipkart',
+        'Zomato',
+        'Swiggy',
+        'Uber',
+        'Ola',
+        'Spotify',
+        'Jio',
+        'Airtel',
+        'McDonalds',
+        'Google',
+        'Blinkit',
+        'Zepto',
+        'BigBasket',
+        'Myntra',
+        'IRCTC',
+        'Rapido',
       ];
-      for (final known in knownMerchants) {
-        if (RegExp('\\b$known\\b', caseSensitive: false).hasMatch(text)) {
-          merchant = known;
-          break;
+      if (merchant == 'Unknown') {
+        for (final known in knownMerchants) {
+          if (RegExp('\\b$known\\b', caseSensitive: false).hasMatch(text)) {
+            merchant = known;
+            break;
+          }
         }
       }
     }
@@ -141,6 +193,14 @@ class NotificationParser {
       bankName: bankName,
       cardEnding: cardEnding,
     );
+  }
+
+  static String _normalizeText(String input) {
+    return input
+        .replaceAll('\u00a0', ' ')
+        .replaceAll(RegExp(r'[\r\n\t]+'), ' ')
+        .replaceAll(RegExp(r'\s{2,}'), ' ')
+        .trim();
   }
 
   static String? extractCardEndingDigits(String text) {
@@ -164,28 +224,23 @@ class NotificationParser {
       return match.group(1);
     }
 
-    // 3. Matches: xx1234, XXXX1234, ******1234, XXXXXX672345 (extracts last 4 digits)
-    final maskedRegex = RegExp(
-      r'[xX*]{2,}\d*(\d{4})',
-    );
+    // 3. Matches: xx1234, XXXX1234, ******1234, XXXXXX672345.
+    final maskedRegex = RegExp(r'[xX*]{1,}(\d{4,})\b');
     match = maskedRegex.firstMatch(text);
     if (match != null) {
-      return match.group(1);
+      final digits = match.group(1)!;
+      return digits.substring(digits.length - 4);
     }
 
     // 4. Matches general 4-digit suffix of a masked number without spacing, e.g. "x1234"
-    final simpleMaskedRegex = RegExp(
-      r'[xX*]+(\d{4})\b',
-    );
+    final simpleMaskedRegex = RegExp(r'[xX*]+(\d{4})\b');
     match = simpleMaskedRegex.firstMatch(text);
     if (match != null) {
       return match.group(1);
     }
 
     // 5. Matches dot prefix e.g. "...5678" or "... 5678"
-    final dotPrefixRegex = RegExp(
-      r'\.{2,}\s*(\d{4})\b',
-    );
+    final dotPrefixRegex = RegExp(r'\.{2,}\s*(\d{4})\b');
     match = dotPrefixRegex.firstMatch(text);
     if (match != null) {
       return match.group(1);
@@ -209,7 +264,13 @@ class NotificationParser {
     }
 
     // Exclude account/card indicators
-    if (clean == 'a/c' || clean == 'ac' || clean == 'acc' || clean == 'account' || clean == 'card' || clean == 'no' || clean == 'no.') {
+    if (clean == 'a/c' ||
+        clean == 'ac' ||
+        clean == 'acc' ||
+        clean == 'account' ||
+        clean == 'card' ||
+        clean == 'no' ||
+        clean == 'no.') {
       return false;
     }
 
@@ -246,8 +307,16 @@ class NotificationParser {
       }
     }
 
-    // Clean up info: or vpa: prefix
-    merchant = merchant.replaceAll(RegExp(r'^(info:|vpa:)', caseSensitive: false), '');
+    // Clean up metadata and VPA handles while preserving readable payee names.
+    merchant = merchant.replaceAll(
+      RegExp(r'^(info:|vpa:)', caseSensitive: false),
+      '',
+    );
+    merchant = merchant.replaceAll(RegExp(r'\s+'), ' ');
+    merchant = merchant.replaceAll(
+      RegExp(r'\s*(?:upi|ref|txn)\s*$', caseSensitive: false),
+      '',
+    );
     return merchant.trim();
   }
 
@@ -257,8 +326,19 @@ class NotificationParser {
 
     // Food & Dining
     final foodKeywords = [
-      'zomato', 'swiggy', 'starbucks', 'mcdonald', 'dominos', 'pizza',
-      'restaurant', 'cafe', 'bakery', 'diner', 'dhaba', 'eats', 'food'
+      'zomato',
+      'swiggy',
+      'starbucks',
+      'mcdonald',
+      'dominos',
+      'pizza',
+      'restaurant',
+      'cafe',
+      'bakery',
+      'diner',
+      'dhaba',
+      'eats',
+      'food',
     ];
     if (foodKeywords.any((k) => lower.contains(k))) {
       return 'Food & Dining';
@@ -266,8 +346,22 @@ class NotificationParser {
 
     // Travel & Transport
     final travelKeywords = [
-      'uber', 'ola', 'rapido', 'irctc', 'metro', 'fuel', 'petrol', 'shell',
-      'hpcl', 'bpcl', 'indian oil', 'cabs', 'taxi', 'flight', 'toll', 'fastag'
+      'uber',
+      'ola',
+      'rapido',
+      'irctc',
+      'metro',
+      'fuel',
+      'petrol',
+      'shell',
+      'hpcl',
+      'bpcl',
+      'indian oil',
+      'cabs',
+      'taxi',
+      'flight',
+      'toll',
+      'fastag',
     ];
     if (travelKeywords.any((k) => lower.contains(k))) {
       return 'Travel & Transport';
@@ -275,9 +369,20 @@ class NotificationParser {
 
     // Bills & Utilities
     final billsKeywords = [
-      'jio', 'airtel', 'vodafone', 'netflix', 'spotify', 'electricity',
-      'bescom', 'water bill', 'recharge', 'insurance', 'broadband',
-      'utility', 'power', 'dth'
+      'jio',
+      'airtel',
+      'vodafone',
+      'netflix',
+      'spotify',
+      'electricity',
+      'bescom',
+      'water bill',
+      'recharge',
+      'insurance',
+      'broadband',
+      'utility',
+      'power',
+      'dth',
     ];
     if (billsKeywords.any((k) => lower.contains(k))) {
       return 'Bills & Utilities';
@@ -285,9 +390,20 @@ class NotificationParser {
 
     // Shopping
     final shoppingKeywords = [
-      'amazon', 'flipkart', 'myntra', 'nykaa', 'mall', 'decathlon', 'zara',
-      'grocery', 'blinkit', 'instamart', 'bigbasket', 'store', 'supermarket',
-      'retail'
+      'amazon',
+      'flipkart',
+      'myntra',
+      'nykaa',
+      'mall',
+      'decathlon',
+      'zara',
+      'grocery',
+      'blinkit',
+      'instamart',
+      'bigbasket',
+      'store',
+      'supermarket',
+      'retail',
     ];
     if (shoppingKeywords.any((k) => lower.contains(k))) {
       return 'Shopping';
@@ -295,7 +411,13 @@ class NotificationParser {
 
     // Rent
     final rentKeywords = [
-      'rent', 'landlord', 'maintenance', 'flat', 'maid', 'cook', 'housing'
+      'rent',
+      'landlord',
+      'maintenance',
+      'flat',
+      'maid',
+      'cook',
+      'housing',
     ];
     if (rentKeywords.any((k) => lower.contains(k))) {
       return 'Rent';
@@ -303,8 +425,13 @@ class NotificationParser {
 
     // Salary (Credit)
     final salaryKeywords = [
-      'salary', 'dividend', 'interest', 'cashback', 'refund', 'payout',
-      'employer'
+      'salary',
+      'dividend',
+      'interest',
+      'cashback',
+      'refund',
+      'payout',
+      'employer',
     ];
     if (salaryKeywords.any((k) => lower.contains(k))) {
       return 'Salary';

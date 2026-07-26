@@ -25,7 +25,7 @@ void main() {
 
       // Create account with known starting balance
       final accountId = await db.createAccount(
-        const Account(bankName: 'Test Bank', currentBalance: 10000.00),
+        Account(bankName: 'Test Bank', currentBalance: 10000.00),
       );
 
       // Verify starting balance
@@ -62,7 +62,7 @@ void main() {
         final db = AppDatabase.instance;
 
         final accountId = await db.createAccount(
-          const Account(bankName: 'Test Bank', currentBalance: 10000.00),
+          Account(bankName: 'Test Bank', currentBalance: 10000.00),
         );
 
         // Insert a ₹2,000 credit
@@ -99,7 +99,7 @@ void main() {
       final db = AppDatabase.instance;
 
       final accountId = await db.createAccount(
-        const Account(bankName: 'Test Bank', currentBalance: 10000.00),
+        Account(bankName: 'Test Bank', currentBalance: 10000.00),
       );
 
       // Insert a ₹1,000 debit → balance = 9,000

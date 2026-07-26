@@ -19,14 +19,13 @@ class ReminderNotificationService {
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings = AndroidInitializationSettings(
+      '@mipmap/ic_launcher',
+    );
     const initSettings = InitializationSettings(android: androidSettings);
 
     try {
-      await _notificationsPlugin.initialize(
-        initSettings,
-      );
+      await _notificationsPlugin.initialize(initSettings);
       _isInitialized = true;
 
       // Reschedule on startup if enabled

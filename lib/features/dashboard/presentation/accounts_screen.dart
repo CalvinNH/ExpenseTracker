@@ -15,7 +15,7 @@ class AccountsScreen extends StatefulWidget {
 class _AccountsScreenState extends State<AccountsScreen> {
   bool _isLoading = true;
   List<Account> _accounts = [];
-  
+
   final _addFormKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _balanceController = TextEditingController();
@@ -58,7 +58,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
     final lower = bankName.toLowerCase();
     if (lower.contains('cash')) {
       return 'assets/icon/account_cash.png';
-    } else if (lower.contains('card') || lower.contains('cc') || lower.contains('credit')) {
+    } else if (lower.contains('card') ||
+        lower.contains('cc') ||
+        lower.contains('credit')) {
       return 'assets/icon/account_card.png';
     } else {
       return 'assets/icon/account_bank.png';
@@ -69,7 +71,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
     final lower = bankName.toLowerCase();
     if (lower.contains('cash')) {
       return 'Cash Wallet';
-    } else if (lower.contains('card') || lower.contains('cc') || lower.contains('credit')) {
+    } else if (lower.contains('card') ||
+        lower.contains('cc') ||
+        lower.contains('credit')) {
       return 'Credit Card';
     } else {
       return 'Bank Account';
@@ -93,7 +97,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
             return AlertDialog(
               backgroundColor: Colors.white,
               surfaceTintColor: Colors.transparent,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               title: const Text(
                 'Add Account',
                 style: TextStyle(
@@ -215,7 +221,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           signed: true,
                         ),
                         inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'^-?\d*\.?\d{0,2}')),
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'^-?\d*\.?\d{0,2}'),
+                          ),
                         ],
                         validator: (value) {
                           final text = value?.trim() ?? '';
@@ -240,7 +248,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 FilledButton(
                   style: FilledButton.styleFrom(
                     backgroundColor: AppTheme.primaryBlue,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
                   ),
                   onPressed: _isSaving
                       ? null
@@ -252,19 +262,24 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           setDialogState(() => _isSaving = true);
                           try {
                             String name = _nameController.text.trim();
-                            final balance = double.parse(_balanceController.text.trim());
+                            final balance = double.parse(
+                              _balanceController.text.trim(),
+                            );
 
                             // Deduce or enforce name format matching selected type
                             if (_selectedType == 'Card') {
                               final ending = _cardEndingController.text.trim();
                               final lower = name.toLowerCase();
-                              if (!lower.contains('card') && !lower.contains('cc') && !lower.contains('credit')) {
+                              if (!lower.contains('card') &&
+                                  !lower.contains('cc') &&
+                                  !lower.contains('credit')) {
                                 name = '$name Credit Card';
                               }
                               name = '$name ($ending)';
                             } else if (_selectedType == 'Cash') {
                               final lower = name.toLowerCase();
-                              if (!lower.contains('cash') && !lower.contains('wallet')) {
+                              if (!lower.contains('cash') &&
+                                  !lower.contains('wallet')) {
                                 name = '$name Cash';
                               }
                             }
@@ -276,11 +291,18 @@ class _AccountsScreenState extends State<AccountsScreen> {
                             if (context.mounted) {
                               Navigator.pop(context);
                               _loadAccounts();
-                              AppToast.show(context, 'Account added successfully');
+                              AppToast.show(
+                                context,
+                                'Account added successfully',
+                              );
                             }
                           } catch (e) {
                             if (context.mounted) {
-                              AppToast.show(context, 'Failed to add account: $e', isError: true);
+                              AppToast.show(
+                                context,
+                                'Failed to add account: $e',
+                                isError: true,
+                              );
                             }
                           } finally {
                             setDialogState(() => _isSaving = false);
@@ -305,7 +327,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
-  Widget _buildTypeButton(String type, String label, StateSetter setDialogState) {
+  Widget _buildTypeButton(
+    String type,
+    String label,
+    StateSetter setDialogState,
+  ) {
     final isSelected = _selectedType == type;
     return Expanded(
       child: GestureDetector(
@@ -386,86 +412,87 @@ class _AccountsScreenState extends State<AccountsScreen> {
                   child: _isLoading
                       ? const Center(child: CircularProgressIndicator())
                       : _accounts.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.account_balance_rounded,
-                                    size: 64,
-                                    color: AppTheme.textMuted.withOpacity(0.4),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  const Text(
-                                    'No accounts set up yet.',
-                                    style: TextStyle(
-                                      color: AppTheme.textDark,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                    ),
-                                  ),
-                                ],
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.account_balance_rounded,
+                                size: 64,
+                                color: AppTheme.textMuted.withOpacity(0.4),
                               ),
-                            )
-                          : ListView.builder(
-                              padding: const EdgeInsets.symmetric(horizontal: 24),
-                              itemCount: _accounts.length,
-                              itemBuilder: (context, index) {
-                                final acc = _accounts[index];
-                                final isCard = acc.bankName.toLowerCase().contains('card') || 
-                                               acc.bankName.toLowerCase().contains('cc') ||
-                                               acc.bankName.toLowerCase().contains('credit');
+                              const SizedBox(height: 16),
+                              const Text(
+                                'No accounts set up yet.',
+                                style: TextStyle(
+                                  color: AppTheme.textDark,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          itemCount: _accounts.length,
+                          itemBuilder: (context, index) {
+                            final acc = _accounts[index];
+                            final isCard =
+                                acc.bankName.toLowerCase().contains('card') ||
+                                acc.bankName.toLowerCase().contains('cc') ||
+                                acc.bankName.toLowerCase().contains('credit');
 
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 16),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(20),
-                                    boxShadow: AppTheme.cardShadow,
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 16),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: AppTheme.cardShadow,
+                              ),
+                              child: ListTile(
+                                contentPadding: const EdgeInsets.all(16),
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Image.asset(
+                                    _getAccountIconPath(acc.bankName),
+                                    width: 44,
+                                    height: 44,
+                                    fit: BoxFit.cover,
                                   ),
-                                  child: ListTile(
-                                    contentPadding: const EdgeInsets.all(16),
-                                    leading: ClipRRect(
-                                      borderRadius: BorderRadius.circular(12),
-                                      child: Image.asset(
-                                        _getAccountIconPath(acc.bankName),
-                                        width: 44,
-                                        height: 44,
-                                        fit: BoxFit.cover,
-                                      ),
-                                    ),
-                                    title: Text(
-                                      acc.bankName,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: AppTheme.textDark,
-                                        fontSize: 16,
-                                      ),
-                                    ),
-                                    subtitle: Padding(
-                                      padding: const EdgeInsets.only(top: 4),
-                                      child: Text(
-                                        _getAccountTypeLabel(acc.bankName),
-                                        style: const TextStyle(
-                                          color: AppTheme.textMuted,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                    trailing: Text(
-                                      '₹ ${acc.currentBalance.toStringAsFixed(2)}',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: isCard && acc.currentBalance < 0 
-                                            ? AppTheme.errorRed 
-                                            : AppTheme.textDark,
-                                        fontSize: 16,
-                                      ),
+                                ),
+                                title: Text(
+                                  acc.bankName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.textDark,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    _getAccountTypeLabel(acc.bankName),
+                                    style: const TextStyle(
+                                      color: AppTheme.textMuted,
+                                      fontSize: 12,
                                     ),
                                   ),
-                                );
-                              },
-                            ),
+                                ),
+                                trailing: Text(
+                                  '₹ ${acc.currentBalance.toStringAsFixed(2)}',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: isCard && acc.currentBalance < 0
+                                        ? AppTheme.errorRed
+                                        : AppTheme.textDark,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                 ),
               ],
             ),

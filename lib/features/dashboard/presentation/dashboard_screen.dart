@@ -23,23 +23,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, double> _categoryExpenses = {};
   Map<int, String> _accountIdToNameMap = {};
   List<FlSpot> _sparklineSpots = [];
-  
+
   bool _isSearching = false;
   final _searchController = TextEditingController();
   String _searchQuery = '';
-  
+
   StreamSubscription? _transactionSubscription;
 
   @override
   void initState() {
     super.initState();
     _loadDashboardData();
-    _transactionSubscription =
-        NotificationService.onTransactionIngested.listen((_) {
-      if (mounted) {
-        _loadDashboardData();
-      }
-    });
+    _transactionSubscription = NotificationService.onTransactionIngested.listen(
+      (_) {
+        if (mounted) {
+          _loadDashboardData();
+        }
+      },
+    );
   }
 
   @override
@@ -53,14 +54,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isLoading = true);
     try {
       final db = AppDatabase.instance;
-      
+
       final totalBalance = await db.getTotalBalance();
       final allTransactions = await db.getAllTransactions();
       final accounts = await db.getAllAccounts();
-      
-      final accountMap = {
-        for (final acc in accounts) acc.id!: acc.bankName,
-      };
+
+      final accountMap = {for (final acc in accounts) acc.id!: acc.bankName};
 
       // Filter recent 10 transactions
       final recent = allTransactions.take(10).toList();
@@ -72,14 +71,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final currentMonthExpenses = allTransactions.where((txn) {
         return txn.type == TransactionType.debit &&
-            txn.timestamp.isAfter(currentMonthStart.subtract(const Duration(microseconds: 1))) &&
+            txn.timestamp.isAfter(
+              currentMonthStart.subtract(const Duration(microseconds: 1)),
+            ) &&
             txn.timestamp.isBefore(nextMonthStart);
       }).toList();
 
       // Category expenses
       final Map<String, double> categoryMap = {};
       for (final txn in currentMonthExpenses) {
-        categoryMap[txn.category] = (categoryMap[txn.category] ?? 0.0) + txn.amount;
+        categoryMap[txn.category] =
+            (categoryMap[txn.category] ?? 0.0) + txn.amount;
       }
 
       // Generate sparkline spots (cumulative spend or daily spend)
@@ -148,8 +150,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return 'Yesterday';
     } else {
       final months = [
-        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
       ];
       return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
     }
@@ -158,7 +170,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final totalExpenses = _categoryExpenses.values.fold<double>(0.0, (sum, val) => sum + val);
+    final totalExpenses = _categoryExpenses.values.fold<double>(
+      0.0,
+      (sum, val) => sum + val,
+    );
 
     return Scaffold(
       body: SafeArea(
@@ -185,7 +200,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                     // Recent Transactions
                     _buildRecentTransactionsSection(theme),
-                    const SizedBox(height: 120), // Padding for the floating bottom bar
+                    const SizedBox(
+                      height: 120,
+                    ), // Padding for the floating bottom bar
                   ],
                 ),
         ),
@@ -205,16 +222,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Row(
           children: [
-            const Icon(Icons.search_rounded, color: AppTheme.textMuted, size: 20),
+            const Icon(
+              Icons.search_rounded,
+              color: AppTheme.textMuted,
+              size: 20,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: _searchController,
                 autofocus: true,
-                style: const TextStyle(color: AppTheme.textDark, fontSize: 15, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                  color: AppTheme.textDark,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
                 decoration: const InputDecoration(
                   hintText: 'Search by merchant description...',
-                  hintStyle: TextStyle(color: AppTheme.textMuted, fontSize: 14, fontWeight: FontWeight.normal),
+                  hintStyle: TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 14,
+                    fontWeight: FontWeight.normal,
+                  ),
                   border: InputBorder.none,
                   isDense: true,
                 ),
@@ -226,7 +255,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.close_rounded, color: AppTheme.textMuted, size: 20),
+              icon: const Icon(
+                Icons.close_rounded,
+                color: AppTheme.textMuted,
+                size: 20,
+              ),
               onPressed: () {
                 setState(() {
                   _isSearching = false;
@@ -319,12 +352,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onTap: () async {
                   await Navigator.push(
                     context,
-                    MaterialPageRoute<void>(builder: (_) => const AccountsScreen()),
+                    MaterialPageRoute<void>(
+                      builder: (_) => const AccountsScreen(),
+                    ),
                   );
                   _loadDashboardData();
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(20),
@@ -366,8 +404,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildThisMonthSection(ThemeData theme, double totalExpenses) {
     final months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
     ];
     final currentMonthName = months[DateTime.now().month - 1];
 
@@ -436,7 +484,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
-                  
+
                   // Mini Sparkline Trend Chart
                   if (totalExpenses > 0)
                     SizedBox(
@@ -451,7 +499,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           maxX: DateTime.now().day.toDouble(),
                           minY: 0,
                           // Find max value in sparkline spots
-                          maxY: _sparklineSpots.map((s) => s.y).reduce((a, b) => a > b ? a : b) * 1.1,
+                          maxY:
+                              _sparklineSpots
+                                  .map((s) => s.y)
+                                  .reduce((a, b) => a > b ? a : b) *
+                              1.1,
                           lineBarsData: [
                             LineChartBarData(
                               spots: _sparklineSpots,
@@ -524,10 +576,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildRecentTransactionsSection(ThemeData theme) {
     final List<Transaction> transactionsToRender;
     final bool isSearchActive = _isSearching && _searchQuery.isNotEmpty;
-    
+
     if (isSearchActive) {
       transactionsToRender = _allTransactions
-          .where((txn) => txn.merchant.toLowerCase().contains(_searchQuery.toLowerCase()))
+          .where(
+            (txn) =>
+                txn.merchant.toLowerCase().contains(_searchQuery.toLowerCase()),
+          )
           .toList();
     } else {
       transactionsToRender = _recentTransactions;
@@ -583,13 +638,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
               itemBuilder: (context, index) {
                 final txn = transactionsToRender[index];
                 final isCredit = txn.type == TransactionType.credit;
-                final bankName = _accountIdToNameMap[txn.accountId] ?? 'Unknown Account';
+                final bankName =
+                    _accountIdToNameMap[txn.accountId] ?? 'Unknown Account';
                 final catColor = AppTheme.getCategoryColor(txn.category);
 
                 return Material(
                   color: Colors.transparent,
                   child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 6,
+                    ),
                     leading: Container(
                       width: 44,
                       height: 44,
@@ -618,7 +677,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                         const SizedBox(width: 8),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
                           decoration: BoxDecoration(
                             color: AppTheme.primaryBlue.withOpacity(0.06),
                             borderRadius: BorderRadius.circular(6),
@@ -645,7 +707,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       style: TextStyle(
                         fontWeight: FontWeight.w900,
                         fontSize: 16,
-                        color: isCredit ? AppTheme.successGreen : AppTheme.errorRed,
+                        color: isCredit
+                            ? AppTheme.successGreen
+                            : AppTheme.errorRed,
                       ),
                     ),
                     onTap: () => _openTransactionSheet(txn),

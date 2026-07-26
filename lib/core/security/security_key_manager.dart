@@ -74,7 +74,9 @@ class SecurityKeyManager {
     // Check if production database file exists on disk
     final dbPath = await getDatabasesPath();
     final fullPath = join(dbPath, AppDatabase.databaseName);
-    final dbFileExists = AppDatabase.databaseName != inMemoryDatabasePath && File(fullPath).existsSync();
+    final dbFileExists =
+        AppDatabase.databaseName != inMemoryDatabasePath &&
+        File(fullPath).existsSync();
 
     // Retry loop for reading existing key to handle transient storage locks
     String? existingKey;
@@ -95,7 +97,8 @@ class SecurityKeyManager {
     // KEY PRESERVATION GUARD:
     // If the database file ALREADY EXISTS on disk, generating a new key is forbidden
     // as it would permanently break decryption of existing user data.
-    final isTest = WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
+    final isTest =
+        WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
         Platform.environment.containsKey('FLUTTER_TEST');
     if (dbFileExists && !isTest) {
       throw StateError(

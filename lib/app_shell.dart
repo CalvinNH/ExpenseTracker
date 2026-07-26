@@ -55,12 +55,9 @@ class _AppShellState extends State<AppShell> {
         children: [
           // Content screen
           Positioned.fill(
-            child: IndexedStack(
-              index: _selectedIndex,
-              children: _screens,
-            ),
+            child: IndexedStack(index: _selectedIndex, children: _screens),
           ),
-          
+
           // Floating Bottom Navigation Bar
           Positioned(
             left: 20,
@@ -84,17 +81,17 @@ class _AppShellState extends State<AppShell> {
                 children: [
                   _buildNavItem(0, Icons.home_rounded, 'Home', theme),
                   _buildNavItem(1, Icons.list_alt_rounded, 'Activity', theme),
-                  
+
                   // Central spacer for FAB
                   const SizedBox(width: 56),
-                  
+
                   _buildNavItem(2, Icons.bar_chart_rounded, 'Analytics', theme),
                   _buildNavItem(3, Icons.settings_rounded, 'Settings', theme),
                 ],
               ),
             ),
           ),
-          
+
           // Floating Action Button (+)
           Positioned(
             bottom: 40,
@@ -117,11 +114,7 @@ class _AppShellState extends State<AppShell> {
                       ),
                     ],
                   ),
-                  child: const Icon(
-                    Icons.add,
-                    color: Colors.white,
-                    size: 28,
-                  ),
+                  child: const Icon(Icons.add, color: Colors.white, size: 28),
                 ),
               ),
             ),
@@ -131,9 +124,16 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  Widget _buildNavItem(int index, IconData icon, String label, ThemeData theme) {
+  Widget _buildNavItem(
+    int index,
+    IconData icon,
+    String label,
+    ThemeData theme,
+  ) {
     final isSelected = _selectedIndex == index;
-    final color = isSelected ? theme.colorScheme.primary : const Color(0xFF9CA3AF);
+    final color = isSelected
+        ? theme.colorScheme.primary
+        : const Color(0xFF9CA3AF);
 
     return InkWell(
       onTap: () => _onTabSelected(index),
@@ -143,11 +143,7 @@ class _AppShellState extends State<AppShell> {
         mainAxisSize: MainAxisSize.min,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            icon,
-            color: color,
-            size: 24,
-          ),
+          Icon(icon, color: color, size: 24),
           const SizedBox(height: 4),
           Text(
             label,
