@@ -1,4 +1,6 @@
 import 'package:expense_tracker/core/database/app_database.dart';
+import 'package:expense_tracker/core/entity_resolution/account_resolver.dart';
+import 'package:expense_tracker/core/entity_resolution/institution_registry.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/money.dart';
@@ -62,12 +64,16 @@ class NotificationIngestionProcessor {
   NotificationIngestionProcessor({
     AppDatabase? database,
     NotificationSourcePolicy? sourcePolicy,
+    InstitutionRegistry? institutionRegistry,
     this.parserVersion = 1,
   }) : _database = database ?? AppDatabase.instance,
-       _sourcePolicy = sourcePolicy ?? NotificationSourcePolicy();
+       _sourcePolicy = sourcePolicy ?? NotificationSourcePolicy(),
+       _institutionRegistry = institutionRegistry;
 
   final AppDatabase _database;
   final NotificationSourcePolicy _sourcePolicy;
+  final InstitutionRegistry? _institutionRegistry;
+  static Future<InstitutionRegistry>? _defaultRegistry;
   final int parserVersion;
 
   Future<IngestionResult> ingest(NotificationEnvelope envelope) async {
@@ -119,20 +125,32 @@ class NotificationIngestionProcessor {
       );
     }
 
-    final parsed = NotificationParser.parse(
+    final parsed = NotificationParser.pipeline.parse(
       envelope.title ?? '',
       envelope.content ?? '',
+      sourcePackage: envelope.packageName,
+      knownPackage: sourceClass != NotificationSourceClass.unknownPackage,
     );
-    if (parsed == null) {
+    if (parsed.selectedAmount == null ||
+        parsed.direction == FinancialDirection.unknown) {
       final parsedId = await _database.createParsedFinancialEvent(
         ParsedFinancialEvent(
           rawNotificationEventId: rawEvent.id!,
-          eventType: FinancialEventType.unknown,
-          status: FinancialEventStatus.unknown,
-          direction: FinancialDirection.unknown,
-          overallConfidence: 0,
-          parseDecision: ParseDecision.retainOnly,
-          failureCode: 'parser_no_match',
+          eventType: parsed.eventType,
+          status: parsed.status,
+          direction: parsed.direction,
+          amountMinor: parsed.selectedAmount?.amountMinor,
+          currencyCode: parsed.selectedAmount?.currency,
+          merchantRaw: parsed.merchant.raw,
+          merchantNormalized: parsed.merchant.normalized,
+          institutionId: parsed.institutionId,
+          instrumentLastFour: parsed.instrument.lastFour,
+          referenceNumber: parsed.referenceNumber,
+          transactionOccurredAt: parsed.transactionTime ?? postedAt,
+          overallConfidence: parsed.overallConfidence,
+          fieldConfidence: parsed.fieldConfidence,
+          parseDecision: parsed.decision,
+          failureCode: parsed.failureCode ?? 'parser_no_match',
         ),
       );
       await _database.updateRawNotificationProcessingState(
@@ -143,22 +161,87 @@ class NotificationIngestionProcessor {
         disposition: IngestionDisposition.retained,
         rawEventId: rawEvent.id,
         parsedFinancialEventId: parsedId,
-        diagnosticCode: 'parser_no_match',
+        diagnosticCode: parsed.failureCode ?? 'parser_no_match',
       );
     }
 
     final accounts = await _database.getAllAccounts();
-    final matchedAccount = _resolveAccount(accounts, parsed, envelope);
+    final registry =
+        _institutionRegistry ??
+        await (_defaultRegistry ??= InstitutionRegistry.load());
+    final resolution = AccountResolver(registry).resolve(
+      accounts,
+      AccountResolutionEvidence(
+        institution: parsed.institutionId,
+        instrumentLastFour: parsed.instrument.lastFour,
+        sourcePackage: envelope.packageName,
+        rawText: '${envelope.title ?? ''} ${envelope.content ?? ''}',
+      ),
+    );
+    Account? matchedAccount = resolution.resolvedAccountId == null
+        ? null
+        : accounts
+              .where((account) => account.id == resolution.resolvedAccountId)
+              .firstOrNull;
     final unknownSourceNeedsEvidence =
         sourceClass == NotificationSourceClass.unknownPackage;
-    final hasStrongEvidence = _hasStrongTextualEvidence(
-      '${envelope.title ?? ''} ${envelope.content ?? ''}',
-    );
+    final hasStrongEvidence =
+        _hasStrongTextualEvidence(
+          '${envelope.title ?? ''} ${envelope.content ?? ''}',
+        ) ||
+        (resolution.resolutionStatus ==
+                ResolutionStatus.newInstrumentCandidate &&
+            resolution.confidence >= .8);
+    if (matchedAccount == null &&
+        resolution.resolutionStatus ==
+            ResolutionStatus.newInstrumentCandidate &&
+        hasStrongEvidence) {
+      final record =
+          registry.byId(parsed.institutionId) ??
+          registry.institutions
+              .where(
+                (candidate) =>
+                    [candidate.canonicalName, ...candidate.aliases].any(
+                      (alias) =>
+                          ('${envelope.title ?? ''} ${envelope.content ?? ''}')
+                              .toLowerCase()
+                              .contains(alias.toLowerCase()),
+                    ),
+              )
+              .firstOrNull;
+      if (record != null &&
+          record.institutionType != InstitutionType.paymentApplication &&
+          record.institutionType != InstitutionType.merchantPlatform) {
+        final suffix = parsed.instrument.lastFour;
+        final displayName = record.institutionType == InstitutionType.wallet
+            ? record.canonicalName
+            : suffix == null
+            ? record.canonicalName
+            : '${record.canonicalName} account ending $suffix';
+        final newId = await _database.createAccount(
+          Account(
+            displayName: displayName,
+            institutionId: record.institutionId,
+            accountType: record.institutionType == InstitutionType.wallet
+                ? AccountType.wallet
+                : AccountType.bankAccount,
+            lastFour: suffix,
+            sourcePackageHint: envelope.packageName,
+            isProvisional: true,
+          ),
+        );
+        matchedAccount = (await _database.getAccount(newId))!;
+      }
+    }
 
-    ParseDecision decision;
-    String? failureCode;
+    var decision = parsed.decision;
+    var failureCode = parsed.failureCode;
     IngestionDisposition disposition;
-    if (unknownSourceNeedsEvidence && !hasStrongEvidence) {
+    if (decision == ParseDecision.ignored) {
+      disposition = IngestionDisposition.retained;
+    } else if (decision == ParseDecision.retainOnly) {
+      disposition = IngestionDisposition.retained;
+    } else if (unknownSourceNeedsEvidence && !hasStrongEvidence) {
       decision = ParseDecision.retainOnly;
       failureCode = 'unknown_source_insufficient_evidence';
       disposition = IngestionDisposition.retained;
@@ -173,10 +256,12 @@ class NotificationIngestionProcessor {
 
     if (matchedAccount != null && decision == ParseDecision.autoPost) {
       final semanticDuplicate = await _database.hasRecentDuplicate(
-        amount: parsed.amount,
-        type: parsed.type,
+        amount: minorToMajor(parsed.selectedAmount!.amountMinor),
+        type: parsed.direction == FinancialDirection.credit
+            ? TransactionType.credit
+            : TransactionType.debit,
         accountId: matchedAccount.id!,
-        merchant: parsed.merchant,
+        merchant: parsed.merchant.normalized,
         referenceTime: postedAt,
         window: const Duration(minutes: 5),
       );
@@ -190,28 +275,20 @@ class NotificationIngestionProcessor {
     final parsedId = await _database.createParsedFinancialEvent(
       ParsedFinancialEvent(
         rawNotificationEventId: rawEvent.id!,
-        eventType: _eventTypeFor(
-          '${envelope.title ?? ''} ${envelope.content ?? ''}',
-        ),
-        status: FinancialEventStatus.completed,
-        direction: parsed.type == TransactionType.credit
-            ? FinancialDirection.credit
-            : FinancialDirection.debit,
-        amountMinor: majorToMinor(parsed.amount),
-        currencyCode: 'INR',
-        merchantRaw: parsed.merchant,
-        merchantNormalized: parsed.merchant.trim(),
-        institutionId: parsed.bankName == 'Unknown Bank'
-            ? null
-            : _institutionCode(parsed.bankName),
-        instrumentLastFour: parsed.cardEnding,
-        transactionOccurredAt: postedAt,
-        overallConfidence: sourceClass == NotificationSourceClass.unknownPackage
-            ? (hasStrongEvidence ? 0.75 : 0.55)
-            : 0.9,
+        eventType: parsed.eventType,
+        status: parsed.status,
+        direction: parsed.direction,
+        amountMinor: parsed.selectedAmount!.amountMinor,
+        currencyCode: parsed.selectedAmount!.currency,
+        merchantRaw: parsed.merchant.raw,
+        merchantNormalized: parsed.merchant.normalized,
+        institutionId: parsed.institutionId,
+        instrumentLastFour: parsed.instrument.lastFour,
+        referenceNumber: parsed.referenceNumber,
+        transactionOccurredAt: parsed.transactionTime ?? postedAt,
+        overallConfidence: parsed.overallConfidence,
         fieldConfidence: {
-          'amount': 0.95,
-          'direction': 0.9,
+          ...parsed.fieldConfidence,
           'account': matchedAccount == null ? 0 : 0.9,
         },
         parseDecision: decision,
@@ -234,11 +311,15 @@ class NotificationIngestionProcessor {
 
     final transactionId = await _database.postIngestedTransaction(
       transaction: Transaction(
-        amount: parsed.amount,
-        type: parsed.type,
-        timestamp: postedAt,
-        merchant: parsed.merchant,
-        category: parsed.category,
+        amount: minorToMajor(parsed.selectedAmount!.amountMinor),
+        type: parsed.direction == FinancialDirection.credit
+            ? TransactionType.credit
+            : TransactionType.debit,
+        timestamp: parsed.transactionTime ?? postedAt,
+        merchant: parsed.merchant.raw ?? 'Unknown',
+        category: NotificationParser.categorizeMerchant(
+          parsed.merchant.normalized ?? '',
+        ),
         accountId: matchedAccount.id!,
       ),
       parsedFinancialEventId: parsedId,
@@ -255,44 +336,6 @@ class NotificationIngestionProcessor {
     );
   }
 
-  Account? _resolveAccount(
-    List<Account> accounts,
-    ParsedNotification parsed,
-    NotificationEnvelope envelope,
-  ) {
-    var candidates = accounts;
-    if (parsed.cardEnding != null) {
-      final byLastFour = candidates
-          .where(
-            (account) =>
-                account.lastFour == parsed.cardEnding ||
-                account.displayName.endsWith(parsed.cardEnding!),
-          )
-          .toList();
-      if (byLastFour.length == 1) return byLastFour.single;
-      if (byLastFour.isNotEmpty) candidates = byLastFour;
-    }
-
-    if (parsed.bankName != 'Unknown Bank') {
-      final institution = _institutionCode(parsed.bankName);
-      final byInstitution = candidates
-          .where(
-            (account) =>
-                account.institutionId?.toLowerCase() == institution ||
-                account.displayName.toLowerCase().contains(institution),
-          )
-          .toList();
-      if (byInstitution.length == 1) return byInstitution.single;
-      if (byInstitution.isNotEmpty) candidates = byInstitution;
-    }
-
-    final byPackage = candidates
-        .where((account) => account.sourcePackageHint == envelope.packageName)
-        .toList();
-    if (byPackage.length == 1) return byPackage.single;
-    return null;
-  }
-
   bool _hasStrongTextualEvidence(String text) {
     final hasAmount = RegExp(
       r'(?:₹|rs\.?|inr)\s*[:\-]?\s*\d',
@@ -307,42 +350,5 @@ class NotificationIngestionProcessor {
       caseSensitive: false,
     ).hasMatch(text);
     return hasAmount && hasAction && hasInstrumentOrReference;
-  }
-
-  FinancialEventType _eventTypeFor(String text) {
-    final lower = text.toLowerCase();
-    if (lower.contains('cashback')) return FinancialEventType.cashback;
-    if (lower.contains('refund')) return FinancialEventType.refund;
-    if (lower.contains('reversal') || lower.contains('reversed')) {
-      return FinancialEventType.reversal;
-    }
-    if (lower.contains('withdraw')) return FinancialEventType.withdrawal;
-    if (lower.contains('deposit')) return FinancialEventType.deposit;
-    if (lower.contains('transfer') || lower.contains('sent')) {
-      return FinancialEventType.transfer;
-    }
-    return FinancialEventType.purchase;
-  }
-
-  String _institutionCode(String value) {
-    final lower = value.toLowerCase();
-    for (final code in [
-      'hdfc',
-      'sbi',
-      'icici',
-      'axis',
-      'kotak',
-      'pnb',
-      'bob',
-      'yes',
-      'citi',
-      'hsbc',
-      'idfc',
-      'indusind',
-      'rbl',
-    ]) {
-      if (lower.contains(code)) return code;
-    }
-    return lower.split(RegExp(r'\s+')).first;
   }
 }

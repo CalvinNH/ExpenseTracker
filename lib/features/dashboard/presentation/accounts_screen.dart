@@ -1,5 +1,6 @@
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/core/widgets/app_toast.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +21,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
   final _nameController = TextEditingController();
   final _balanceController = TextEditingController();
   final _cardEndingController = TextEditingController();
+  final _institutionController = TextEditingController();
+  final _upiController = TextEditingController();
   String _selectedType = 'Bank'; // 'Bank', 'Card', 'Cash'
   bool _isSaving = false;
 
@@ -34,6 +37,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
     _nameController.dispose();
     _balanceController.dispose();
     _cardEndingController.dispose();
+    _institutionController.dispose();
+    _upiController.dispose();
     super.dispose();
   }
 
@@ -84,6 +89,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
     _nameController.clear();
     _balanceController.clear();
     _cardEndingController.clear();
+    _institutionController.clear();
+    _upiController.clear();
     setState(() {
       _selectedType = 'Bank';
     });
@@ -135,6 +142,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           children: [
                             _buildTypeButton('Bank', 'Bank', setDialogState),
                             _buildTypeButton('Card', 'Card', setDialogState),
+                            _buildTypeButton(
+                              'Wallet',
+                              'Wallet',
+                              setDialogState,
+                            ),
                             _buildTypeButton('Cash', 'Cash', setDialogState),
                           ],
                         ),
@@ -181,8 +193,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
                                 ],
                                 validator: (value) {
                                   final text = value?.trim() ?? '';
-                                  if (text.length != 4) {
-                                    return 'Need 4';
+                                  if (text.isNotEmpty && text.length != 4) {
+                                    return 'Use 4 digits';
                                   }
                                   return null;
                                 },
@@ -207,6 +219,32 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           },
                         ),
                       const SizedBox(height: 16),
+                      if (_selectedType != 'Cash') ...[
+                        TextFormField(
+                          controller: _institutionController,
+                          decoration: const InputDecoration(
+                            labelText: 'Institution',
+                            hintText:
+                                'Bank, payment app, or custom institution',
+                            border: OutlineInputBorder(),
+                          ),
+                          textCapitalization: TextCapitalization.words,
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      if (_selectedType == 'Bank' ||
+                          _selectedType == 'Wallet') ...[
+                        TextFormField(
+                          controller: _upiController,
+                          decoration: const InputDecoration(
+                            labelText: 'UPI handle (optional)',
+                            hintText: 'name@bank',
+                            border: OutlineInputBorder(),
+                          ),
+                          keyboardType: TextInputType.emailAddress,
+                        ),
+                        const SizedBox(height: 16),
+                      ],
 
                       // Balance Field
                       TextFormField(
@@ -275,7 +313,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                                   !lower.contains('credit')) {
                                 name = '$name Credit Card';
                               }
-                              name = '$name ($ending)';
+                              if (ending.isNotEmpty) name = '$name ($ending)';
                             } else if (_selectedType == 'Cash') {
                               final lower = name.toLowerCase();
                               if (!lower.contains('cash') &&
@@ -285,7 +323,27 @@ class _AccountsScreenState extends State<AccountsScreen> {
                             }
 
                             await AppDatabase.instance.createAccount(
-                              Account(bankName: name, currentBalance: balance),
+                              Account(
+                                displayName: name,
+                                institutionId:
+                                    _institutionController.text.trim().isEmpty
+                                    ? null
+                                    : _institutionController.text.trim(),
+                                accountType: switch (_selectedType) {
+                                  'Bank' => AccountType.bankAccount,
+                                  'Card' => AccountType.creditCard,
+                                  'Wallet' => AccountType.wallet,
+                                  _ => AccountType.cash,
+                                },
+                                lastFour:
+                                    _cardEndingController.text.trim().isEmpty
+                                    ? null
+                                    : _cardEndingController.text.trim(),
+                                upiHandle: _upiController.text.trim().isEmpty
+                                    ? null
+                                    : _upiController.text.trim(),
+                                currentBalance: balance,
+                              ),
                             );
 
                             if (context.mounted) {

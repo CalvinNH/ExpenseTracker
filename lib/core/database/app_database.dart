@@ -22,7 +22,7 @@ class AppDatabase {
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 3;
+  static const databaseVersion = 4;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -30,6 +30,7 @@ class AppDatabase {
   static const tableParsedFinancialEvents = 'parsed_financial_events';
   static const tableTransactionGroups = 'transaction_groups';
   static const tableLedgerEntries = 'ledger_entries';
+  static const tableAccountMerges = 'account_merges';
 
   Database? _database;
   Future<Database>? _databaseFuture;
@@ -111,6 +112,7 @@ class AppDatabase {
 
   Future<void> _onCreate(Database db, int version) async {
     await _createVersion2Schema(db);
+    await _createAccountMergesTable(db);
   }
 
   Future<void> _createVersion2Schema(Database db) async {
@@ -158,6 +160,8 @@ class AppDatabase {
           await _upgradeFrom1To2(db);
         case 2:
           await _upgradeFrom2To3(db);
+        case 3:
+          await _createAccountMergesTable(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -248,6 +252,24 @@ class AppDatabase {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_raw_supersedes '
       'ON $tableRawNotificationEvents (supersedes_event_id)',
+    );
+  }
+
+  Future<void> _createAccountMergesTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $tableAccountMerges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provisional_account_id INTEGER NOT NULL,
+        confirmed_account_id INTEGER NOT NULL,
+        provisional_display_name TEXT NOT NULL,
+        provisional_opening_balance_minor INTEGER NOT NULL,
+        merged_at TEXT NOT NULL,
+        CHECK(provisional_account_id != confirmed_account_id)
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_account_merges_provisional '
+      'ON $tableAccountMerges (provisional_account_id)',
     );
   }
 
@@ -429,6 +451,78 @@ class AppDatabase {
   Future<int> deleteAccount(int id) async {
     final db = await database;
     return db.delete(tableAccounts, where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Atomically folds a provisional instrument into a confirmed account.
+  ///
+  /// Both legacy transactions and ledger entries move to the confirmed
+  /// account. Opening balances are combined once, then the confirmed balance
+  /// is rebuilt from that baseline and the moved ledger.
+  Future<void> mergeProvisionalAccount({
+    required int provisionalAccountId,
+    required int confirmedAccountId,
+  }) async {
+    if (provisionalAccountId == confirmedAccountId) {
+      throw ArgumentError('An account cannot be merged into itself.');
+    }
+    final db = await database;
+    await db.transaction((txn) async {
+      final provisionalRows = await txn.query(
+        tableAccounts,
+        where: 'id = ?',
+        whereArgs: [provisionalAccountId],
+        limit: 1,
+      );
+      final confirmedRows = await txn.query(
+        tableAccounts,
+        where: 'id = ?',
+        whereArgs: [confirmedAccountId],
+        limit: 1,
+      );
+      if (provisionalRows.isEmpty || confirmedRows.isEmpty) {
+        throw StateError('Both merge accounts must exist.');
+      }
+      final provisional = Account.fromMap(provisionalRows.single);
+      final confirmed = Account.fromMap(confirmedRows.single);
+      if (!provisional.isProvisional) {
+        throw StateError('Source account is not provisional.');
+      }
+
+      await txn.insert(tableAccountMerges, {
+        'provisional_account_id': provisionalAccountId,
+        'confirmed_account_id': confirmedAccountId,
+        'provisional_display_name': provisional.displayName,
+        'provisional_opening_balance_minor': provisional.openingBalanceMinor,
+        'merged_at': DateTime.now().toUtc().toIso8601String(),
+      });
+      await txn.update(
+        tableTransactions,
+        {'account_id': confirmedAccountId},
+        where: 'account_id = ?',
+        whereArgs: [provisionalAccountId],
+      );
+      await txn.update(
+        tableLedgerEntries,
+        {'account_id': confirmedAccountId},
+        where: 'account_id = ?',
+        whereArgs: [provisionalAccountId],
+      );
+      await txn.update(
+        tableAccounts,
+        {
+          'opening_balance_minor':
+              confirmed.openingBalanceMinor + provisional.openingBalanceMinor,
+        },
+        where: 'id = ?',
+        whereArgs: [confirmedAccountId],
+      );
+      await txn.delete(
+        tableAccounts,
+        where: 'id = ?',
+        whereArgs: [provisionalAccountId],
+      );
+      await _rebuildAccountBalance(txn, confirmedAccountId);
+    });
   }
 
   // --- Transactions CRUD ---

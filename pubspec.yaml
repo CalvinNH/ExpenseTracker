@@ -75,6 +75,7 @@ flutter:
     - assets/icon/account_bank.png
     - assets/icon/account_card.png
     - assets/icon/account_cash.png
+    - assets/data/institutions_v1.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

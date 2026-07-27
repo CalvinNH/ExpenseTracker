@@ -76,19 +76,13 @@ void main() {
       expect(parsed.bankName, 'Axis Bank');
     });
 
-    test('Debit test with Card ending, to prefix, and HDFC bank', () {
+    test('Ambiguous txn wording does not default to debit', () {
       final parsed = NotificationParser.parse(
         'Transaction Alert',
         'Dear Customer, txn of Rs. 4,500.00 on HDFC Bank Card ending 1234 to Amazon.',
       );
 
-      expect(parsed, isNotNull);
-      expect(parsed!.amount, 4500.00);
-      expect(parsed.type, TransactionType.debit);
-      expect(parsed.merchant, 'Amazon');
-      expect(parsed.category, 'Shopping');
-      expect(parsed.bankName, 'HDFC Bank');
-      expect(parsed.cardEnding, '1234');
+      expect(parsed, isNull);
     });
 
     test('Card ending digits extraction regex tests', () {
@@ -182,7 +176,7 @@ void main() {
     });
 
     test('parse() returns null when the amount overflows to infinity', () {
-      final content = 'Rs. ' + ('9' * 400) + ' debited from HDFC a/c xx1234';
+      final content = 'Rs. ${'9' * 400} debited from HDFC a/c xx1234';
       final parsed = NotificationParser.parse('Transaction Alert', content);
       expect(parsed, isNull);
     });

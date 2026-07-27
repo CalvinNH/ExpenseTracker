@@ -215,7 +215,7 @@ void main() {
     final parsed = await AppDatabase.instance.getParsedFinancialEvent(
       result.parsedFinancialEventId!,
     );
-    expect(parsed!.failureCode, 'parser_no_match');
+    expect(parsed!.failureCode, 'transaction_amount_missing');
   });
 
   test('identical notification is not processed twice', () async {

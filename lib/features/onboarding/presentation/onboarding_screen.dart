@@ -1,6 +1,7 @@
 import 'package:expense_tracker/app_shell.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/core/widgets/app_toast.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
@@ -105,7 +106,25 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         }
 
         await db.createAccount(
-          Account(bankName: name, currentBalance: balance),
+          Account(
+            displayName: name,
+            institutionId: entry.institutionController.text.trim().isEmpty
+                ? null
+                : entry.institutionController.text.trim(),
+            accountType: switch (entry.selectedType) {
+              'Bank' => AccountType.bankAccount,
+              'Card' => AccountType.creditCard,
+              'Wallet' => AccountType.wallet,
+              _ => AccountType.cash,
+            },
+            lastFour: entry.cardEndingController.text.trim().isEmpty
+                ? null
+                : entry.cardEndingController.text.trim(),
+            upiHandle: entry.upiController.text.trim().isEmpty
+                ? null
+                : entry.upiController.text.trim(),
+            currentBalance: balance,
+          ),
         );
       }
 
@@ -494,6 +513,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             children: [
               _buildTypeButton(entry, 'Bank', 'Bank'),
               _buildTypeButton(entry, 'Card', 'Credit Card'),
+              _buildTypeButton(entry, 'Wallet', 'Wallet'),
               _buildTypeButton(entry, 'Cash', 'Cash'),
             ],
           ),
@@ -613,8 +633,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         return null;
                       }
 
-                      if (text.length != 4) {
-                        return 'Need 4';
+                      if (text.isNotEmpty && text.length != 4) {
+                        return 'Use 4 digits';
                       }
 
                       return null;
@@ -673,6 +693,30 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ),
         const SizedBox(height: 12),
+        if (entry.selectedType != 'Cash') ...[
+          TextFormField(
+            controller: entry.institutionController,
+            decoration: const InputDecoration(
+              labelText: 'Institution',
+              hintText: 'Bank, payment app, or custom institution',
+              border: OutlineInputBorder(),
+            ),
+            textCapitalization: TextCapitalization.words,
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (entry.selectedType == 'Bank' || entry.selectedType == 'Wallet') ...[
+          TextFormField(
+            controller: entry.upiController,
+            decoration: const InputDecoration(
+              labelText: 'UPI handle (optional)',
+              hintText: 'name@bank',
+              border: OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.emailAddress,
+          ),
+          const SizedBox(height: 12),
+        ],
         // Custom Current Balance input
         Container(
           decoration: BoxDecoration(
@@ -774,10 +818,14 @@ class _AccountEntry {
   final nameController = TextEditingController();
   final balanceController = TextEditingController();
   final cardEndingController = TextEditingController();
+  final institutionController = TextEditingController();
+  final upiController = TextEditingController();
 
   void dispose() {
     nameController.dispose();
     balanceController.dispose();
     cardEndingController.dispose();
+    institutionController.dispose();
+    upiController.dispose();
   }
 }
