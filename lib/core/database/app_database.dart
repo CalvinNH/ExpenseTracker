@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:expense_tracker/core/database/database_migrator.dart';
 import 'package:expense_tracker/core/models/account.dart';
+import 'package:expense_tracker/core/models/event_matching.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/ledger_entry.dart';
 import 'package:expense_tracker/core/models/money.dart';
@@ -22,7 +23,7 @@ class AppDatabase {
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 4;
+  static const databaseVersion = 5;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -31,6 +32,8 @@ class AppDatabase {
   static const tableTransactionGroups = 'transaction_groups';
   static const tableLedgerEntries = 'ledger_entries';
   static const tableAccountMerges = 'account_merges';
+  static const tableParsedEventLedgerLinks = 'parsed_event_ledger_links';
+  static const tableParsedEventGroupLinks = 'parsed_event_group_links';
 
   Database? _database;
   Future<Database>? _databaseFuture;
@@ -162,6 +165,8 @@ class AppDatabase {
           await _upgradeFrom2To3(db);
         case 3:
           await _createAccountMergesTable(db);
+        case 4:
+          await _upgradeFrom4To5(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -255,6 +260,75 @@ class AppDatabase {
     );
   }
 
+  Future<void> _upgradeFrom4To5(Database db) async {
+    if (await _tableExists(db, tableRawNotificationEvents)) {
+      await _addColumnIfMissing(
+        db,
+        tableRawNotificationEvents,
+        'exact_duplicate_of_event_id',
+        'INTEGER',
+      );
+      await _addColumnIfMissing(
+        db,
+        tableRawNotificationEvents,
+        'duplicate_rationale',
+        'TEXT',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_raw_exact_duplicate '
+        'ON $tableRawNotificationEvents (exact_duplicate_of_event_id)',
+      );
+    }
+    if (await _tableExists(db, tableParsedFinancialEvents)) {
+      await _addColumnIfMissing(
+        db,
+        tableParsedFinancialEvents,
+        'payment_rail',
+        'TEXT',
+      );
+      await _addColumnIfMissing(
+        db,
+        tableParsedFinancialEvents,
+        'ledger_duplicate_confidence',
+        'REAL NOT NULL DEFAULT 0',
+      );
+      await _addColumnIfMissing(
+        db,
+        tableParsedFinancialEvents,
+        'ledger_duplicate_rationale',
+        'TEXT',
+      );
+    }
+    if (await _tableExists(db, tableParsedFinancialEvents) &&
+        await _tableExists(db, tableLedgerEntries) &&
+        await _tableExists(db, tableTransactionGroups)) {
+      await _createEventLinkTables(db);
+    }
+  }
+
+  Future<bool> _tableExists(Database db, String table) async {
+    final rows = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: "type = 'table' AND name = ?",
+      whereArgs: [table],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+    String declaration,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    if (!columns.any((row) => row['name'] == column)) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $declaration');
+    }
+  }
+
   Future<void> _createAccountMergesTable(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $tableAccountMerges (
@@ -290,7 +364,11 @@ class AppDatabase {
         processing_state TEXT NOT NULL,
         structural_fingerprint TEXT,
         supersedes_event_id INTEGER,
+        exact_duplicate_of_event_id INTEGER,
+        duplicate_rationale TEXT,
         FOREIGN KEY (supersedes_event_id)
+          REFERENCES $tableRawNotificationEvents (id) ON DELETE SET NULL,
+        FOREIGN KEY (exact_duplicate_of_event_id)
           REFERENCES $tableRawNotificationEvents (id) ON DELETE SET NULL
       )
     ''');
@@ -308,11 +386,14 @@ class AppDatabase {
         institution_id TEXT,
         instrument_last_four TEXT,
         reference_number TEXT,
+        payment_rail TEXT,
         transaction_occurred_at TEXT,
         overall_confidence REAL NOT NULL,
         field_confidence TEXT NOT NULL,
         parse_decision TEXT NOT NULL,
         failure_code TEXT,
+        ledger_duplicate_confidence REAL NOT NULL DEFAULT 0,
+        ledger_duplicate_rationale TEXT,
         FOREIGN KEY (raw_notification_event_id)
           REFERENCES $tableRawNotificationEvents (id) ON DELETE CASCADE
       )
@@ -356,6 +437,7 @@ class AppDatabase {
           REFERENCES $tableAccounts (id) ON DELETE CASCADE
       )
     ''');
+    await _createEventLinkTables(db);
 
     await db.execute(
       'CREATE INDEX idx_raw_notification_payload_hash '
@@ -392,6 +474,49 @@ class AppDatabase {
     await db.execute(
       'CREATE INDEX idx_raw_supersedes '
       'ON $tableRawNotificationEvents (supersedes_event_id)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_raw_exact_duplicate '
+      'ON $tableRawNotificationEvents (exact_duplicate_of_event_id)',
+    );
+  }
+
+  Future<void> _createEventLinkTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $tableParsedEventLedgerLinks (
+        parsed_financial_event_id INTEGER NOT NULL,
+        ledger_entry_id INTEGER NOT NULL,
+        match_rationale TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (parsed_financial_event_id, ledger_entry_id),
+        FOREIGN KEY (parsed_financial_event_id)
+          REFERENCES $tableParsedFinancialEvents (id) ON DELETE CASCADE,
+        FOREIGN KEY (ledger_entry_id)
+          REFERENCES $tableLedgerEntries (id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $tableParsedEventGroupLinks (
+        parsed_financial_event_id INTEGER NOT NULL,
+        transaction_group_id INTEGER NOT NULL,
+        match_rationale TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (parsed_financial_event_id, transaction_group_id),
+        FOREIGN KEY (parsed_financial_event_id)
+          REFERENCES $tableParsedFinancialEvents (id) ON DELETE CASCADE,
+        FOREIGN KEY (transaction_group_id)
+          REFERENCES $tableTransactionGroups (id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_event_ledger_link '
+      'ON $tableParsedEventLedgerLinks (ledger_entry_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_event_group_link '
+      'ON $tableParsedEventGroupLinks (transaction_group_id)',
     );
   }
 
@@ -562,48 +687,6 @@ class AppDatabase {
 
       return id;
     });
-  }
-
-  /// Returns true if a transaction with the same amount, type, account, and merchant
-  /// was recorded within [window] of now. Used ONLY by the notification
-  /// ingestion path to suppress duplicate alerts for the same underlying
-  /// transaction (e.g. re-posted or updated notifications).
-  Future<bool> hasRecentDuplicate({
-    required double amount,
-    required TransactionType type,
-    required int accountId,
-    String? merchant,
-    Duration window = const Duration(seconds: 30),
-    DateTime? referenceTime,
-  }) async {
-    final db = await database;
-    final reference = referenceTime ?? DateTime.now();
-    final cutoff = reference.subtract(window).toIso8601String();
-    final ceiling = reference.add(window).toIso8601String();
-
-    if (merchant != null && merchant.isNotEmpty && merchant != 'Unknown') {
-      final rows = await db.query(
-        tableTransactions,
-        columns: ['id'],
-        where:
-            'amount = ? AND type = ? AND account_id = ? AND merchant = ? '
-            'AND timestamp BETWEEN ? AND ?',
-        whereArgs: [amount, type.value, accountId, merchant, cutoff, ceiling],
-        limit: 1,
-      );
-      if (rows.isNotEmpty) return true;
-    }
-
-    final rows = await db.query(
-      tableTransactions,
-      columns: ['id'],
-      where:
-          'amount = ? AND type = ? AND account_id = ? '
-          'AND timestamp BETWEEN ? AND ?',
-      whereArgs: [amount, type.value, accountId, cutoff, ceiling],
-      limit: 1,
-    );
-    return rows.isNotEmpty;
   }
 
   Future<Transaction?> getTransaction(int id) async {
@@ -857,37 +940,26 @@ class AppDatabase {
   ) async {
     final db = await database;
     return db.transaction((txn) async {
-      final exactWhere = <String>['package_name = ?'];
-      final exactArgs = <Object?>[event.packageName];
-      void addExactIdentity(String column, Object? value) {
-        if (value == null) {
-          exactWhere.add('$column IS NULL');
-        } else {
-          exactWhere.add('$column = ?');
-          exactArgs.add(value);
-        }
-      }
-
-      addExactIdentity('notification_key', event.notificationKey);
-      addExactIdentity('notification_id', event.notificationId);
-      addExactIdentity('notification_tag', event.notificationTag);
-      exactWhere.add('payload_hash = ?');
-      exactArgs.add(event.payloadHash);
-      exactWhere.add('posted_at = ?');
-      exactArgs.add(event.postedAt.toIso8601String());
-
-      final exactRows = await txn.query(
+      final payloadMatches = await txn.query(
         tableRawNotificationEvents,
-        where: exactWhere.join(' AND '),
-        whereArgs: exactArgs,
+        where: 'package_name = ? AND payload_hash = ?',
+        whereArgs: [event.packageName, event.payloadHash],
+        orderBy: 'ingested_at DESC, id DESC',
         limit: 1,
       );
-      if (exactRows.isNotEmpty) {
-        return RawNotificationInsertResult(
-          event: RawNotificationEvent.fromMap(exactRows.first),
-          wasInserted: false,
-        );
-      }
+      final exactDuplicateOfEventId = payloadMatches.isEmpty
+          ? null
+          : payloadMatches.first['id'] as int;
+      final priorPayload = payloadMatches.isEmpty
+          ? null
+          : RawNotificationEvent.fromMap(payloadMatches.first);
+      final sharesNotificationIdentity =
+          priorPayload != null &&
+          ((event.notificationKey != null &&
+                  event.notificationKey == priorPayload.notificationKey) ||
+              (event.notificationId != null &&
+                  event.notificationId == priorPayload.notificationId &&
+                  event.notificationTag == priorPayload.notificationTag));
 
       int? supersedesEventId;
       if (event.notificationKey != null || event.notificationId != null) {
@@ -939,6 +1011,14 @@ class AppDatabase {
         processingState: event.processingState,
         structuralFingerprint: event.structuralFingerprint,
         supersedesEventId: supersedesEventId,
+        exactDuplicateOfEventId: exactDuplicateOfEventId,
+        duplicateRationale: exactDuplicateOfEventId == null
+            ? null
+            : [
+                if (sharesNotificationIdentity)
+                  MatchRationale.notificationIdentity.storageValue,
+                MatchRationale.payloadHash.storageValue,
+              ].join(','),
       );
       final id = await txn.insert(
         tableRawNotificationEvents,
@@ -1017,9 +1097,196 @@ class AppDatabase {
           createdAt: DateTime.now().toUtc(),
         ).toMap(),
       );
+      final ledgerRows = await txn.query(
+        tableLedgerEntries,
+        columns: ['id'],
+        where: 'legacy_transaction_id = ?',
+        whereArgs: [transactionId],
+        limit: 1,
+      );
+      await txn.insert(tableParsedEventLedgerLinks, {
+        'parsed_financial_event_id': parsedFinancialEventId,
+        'ledger_entry_id': ledgerRows.single['id'],
+        'match_rationale': 'createdLedgerEntry',
+        'confidence': 1.0,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      });
       await _rebuildAccountBalance(txn, transaction.accountId);
       return transactionId;
     });
+  }
+
+  Future<List<LedgerMatchCandidate>> getLedgerMatchCandidates({
+    required int accountId,
+    required DateTime occurredAt,
+    Duration searchWindow = const Duration(days: 7),
+  }) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        l.id AS ledger_id,
+        l.amount_minor,
+        l.currency_code,
+        l.direction,
+        l.account_id,
+        l.merchant,
+        l.occurred_at,
+        p.reference_number,
+        p.payment_rail,
+        r.package_name
+      FROM $tableLedgerEntries l
+      LEFT JOIN $tableParsedEventLedgerLinks pel
+        ON pel.ledger_entry_id = l.id
+      LEFT JOIN $tableParsedFinancialEvents p
+        ON p.id = COALESCE(pel.parsed_financial_event_id,
+                          l.parsed_financial_event_id)
+      LEFT JOIN $tableRawNotificationEvents r
+        ON r.id = p.raw_notification_event_id
+      WHERE l.account_id = ?
+        AND l.occurred_at BETWEEN ? AND ?
+      ORDER BY l.occurred_at DESC, l.id DESC
+      ''',
+      [
+        accountId,
+        occurredAt.subtract(searchWindow).toIso8601String(),
+        occurredAt.add(searchWindow).toIso8601String(),
+      ],
+    );
+    final seen = <int>{};
+    return rows.where((row) => seen.add(row['ledger_id'] as int)).map((row) {
+      return LedgerMatchCandidate(
+        ledgerEntryId: row['ledger_id'] as int,
+        fingerprint: FinancialEventFingerprint(
+          amountMinor: row['amount_minor'] as int,
+          currencyCode: row['currency_code'] as String,
+          direction: row['direction'] as String,
+          accountId: row['account_id'] as int,
+          merchant: row['merchant'] as String?,
+          reference: row['reference_number'] as String?,
+          paymentRail: row['payment_rail'] as String?,
+          occurredAt: DateTime.parse(row['occurred_at'] as String),
+          sourcePackage: row['package_name'] as String? ?? '',
+        ),
+      );
+    }).toList();
+  }
+
+  Future<void> linkParsedEventToLedger({
+    required int parsedFinancialEventId,
+    required int ledgerEntryId,
+    required DuplicateAssessment assessment,
+  }) async {
+    final db = await database;
+    await db.insert(tableParsedEventLedgerLinks, {
+      'parsed_financial_event_id': parsedFinancialEventId,
+      'ledger_entry_id': ledgerEntryId,
+      'match_rationale': assessment.rationales
+          .map((rationale) => rationale.storageValue)
+          .join(','),
+      'confidence': assessment.confidence,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<Map<String, Object?>>> getParsedEventLedgerLinks() async {
+    final db = await database;
+    return db.query(
+      tableParsedEventLedgerLinks,
+      orderBy: 'parsed_financial_event_id ASC',
+    );
+  }
+
+  Future<int?> getLedgerEntryIdForRawEvent(int rawEventId) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT COALESCE(pel.ledger_entry_id, l.id) AS ledger_id
+      FROM $tableParsedFinancialEvents p
+      LEFT JOIN $tableParsedEventLedgerLinks pel
+        ON pel.parsed_financial_event_id = p.id
+      LEFT JOIN $tableLedgerEntries l
+        ON l.parsed_financial_event_id = p.id
+      WHERE p.raw_notification_event_id = ?
+        AND COALESCE(pel.ledger_entry_id, l.id) IS NOT NULL
+      ORDER BY p.id DESC
+      LIMIT 1
+      ''',
+      [rawEventId],
+    );
+    return rows.isEmpty ? null : rows.single['ledger_id'] as int;
+  }
+
+  Future<void> linkParsedEventToGroup({
+    required int parsedFinancialEventId,
+    required int transactionGroupId,
+    required DuplicateAssessment assessment,
+  }) async {
+    final db = await database;
+    await db.insert(tableParsedEventGroupLinks, {
+      'parsed_financial_event_id': parsedFinancialEventId,
+      'transaction_group_id': transactionGroupId,
+      'match_rationale': assessment.rationales
+          .map((rationale) => rationale.storageValue)
+          .join(','),
+      'confidence': assessment.confidence,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<Map<String, Object?>>> getParsedEventGroupLinks() async {
+    final db = await database;
+    return db.query(
+      tableParsedEventGroupLinks,
+      orderBy: 'parsed_financial_event_id ASC',
+    );
+  }
+
+  Future<List<Map<String, Object?>>> getRelatedGroupCandidates({
+    required int accountId,
+  }) async {
+    final db = await database;
+    return db.rawQuery(
+      '''
+      SELECT
+        peg.transaction_group_id,
+        p.event_type,
+        p.direction,
+        p.amount_minor,
+        p.merchant_normalized,
+        p.reference_number,
+        p.transaction_occurred_at,
+        r.package_name
+      FROM $tableParsedEventGroupLinks peg
+      JOIN $tableParsedFinancialEvents p
+        ON p.id = peg.parsed_financial_event_id
+      JOIN $tableRawNotificationEvents r
+        ON r.id = p.raw_notification_event_id
+      JOIN $tableParsedEventLedgerLinks pel
+        ON pel.parsed_financial_event_id = p.id
+      JOIN $tableLedgerEntries l
+        ON l.id = pel.ledger_entry_id
+      WHERE l.account_id = ?
+      ORDER BY p.transaction_occurred_at DESC, p.id DESC
+      ''',
+      [accountId],
+    );
+  }
+
+  Future<void> updateTransactionGroupType(
+    int transactionGroupId,
+    TransactionGroupType groupType,
+  ) async {
+    final db = await database;
+    await db.update(
+      tableTransactionGroups,
+      {
+        'group_type': groupType.storageValue,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [transactionGroupId],
+    );
   }
 
   Future<ParsedFinancialEvent?> getParsedFinancialEvent(int id) async {

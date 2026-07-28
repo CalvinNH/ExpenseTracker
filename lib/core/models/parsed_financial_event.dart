@@ -16,11 +16,14 @@ class ParsedFinancialEvent {
     this.institutionId,
     this.instrumentLastFour,
     this.referenceNumber,
+    this.paymentRail,
     this.transactionOccurredAt,
     required this.overallConfidence,
     this.fieldConfidence = const {},
     required this.parseDecision,
     this.failureCode,
+    this.ledgerDuplicateConfidence = 0,
+    this.ledgerDuplicateRationale,
   });
 
   final int? id;
@@ -35,11 +38,14 @@ class ParsedFinancialEvent {
   final String? institutionId;
   final String? instrumentLastFour;
   final String? referenceNumber;
+  final String? paymentRail;
   final DateTime? transactionOccurredAt;
   final double overallConfidence;
   final Map<String, double> fieldConfidence;
   final ParseDecision parseDecision;
   final String? failureCode;
+  final double ledgerDuplicateConfidence;
+  final String? ledgerDuplicateRationale;
 
   Map<String, Object?> toMap() => {
     if (id != null) 'id': id,
@@ -54,11 +60,14 @@ class ParsedFinancialEvent {
     'institution_id': institutionId,
     'instrument_last_four': instrumentLastFour,
     'reference_number': referenceNumber,
+    'payment_rail': paymentRail,
     'transaction_occurred_at': transactionOccurredAt?.toIso8601String(),
     'overall_confidence': overallConfidence,
     'field_confidence': jsonEncode(fieldConfidence),
     'parse_decision': parseDecision.storageValue,
     'failure_code': failureCode,
+    'ledger_duplicate_confidence': ledgerDuplicateConfidence,
+    'ledger_duplicate_rationale': ledgerDuplicateRationale,
   };
 
   factory ParsedFinancialEvent.fromMap(Map<String, Object?> map) {
@@ -77,6 +86,7 @@ class ParsedFinancialEvent {
       institutionId: map['institution_id'] as String?,
       instrumentLastFour: map['instrument_last_four'] as String?,
       referenceNumber: map['reference_number'] as String?,
+      paymentRail: map['payment_rail'] as String?,
       transactionOccurredAt: map['transaction_occurred_at'] == null
           ? null
           : DateTime.parse(map['transaction_occurred_at'] as String),
@@ -86,6 +96,9 @@ class ParsedFinancialEvent {
       ),
       parseDecision: ParseDecision.fromStorage(map['parse_decision'] as String),
       failureCode: map['failure_code'] as String?,
+      ledgerDuplicateConfidence:
+          (map['ledger_duplicate_confidence'] as num?)?.toDouble() ?? 0,
+      ledgerDuplicateRationale: map['ledger_duplicate_rationale'] as String?,
     );
   }
 }

@@ -48,6 +48,82 @@ void main() {
     expect(result.resolutionStatus, ResolutionStatus.exact);
   });
 
+  test('different-bank accounts are isolated by institution and suffix', () {
+    final result = resolver.resolve(
+      [
+        Account(
+          id: 1,
+          displayName: 'SBI savings',
+          institutionId: 'sbi',
+          accountType: AccountType.bankAccount,
+          lastFour: '1111',
+        ),
+        Account(
+          id: 2,
+          displayName: 'HDFC savings',
+          institutionId: 'hdfc',
+          accountType: AccountType.bankAccount,
+          lastFour: '2222',
+        ),
+      ],
+      const AccountResolutionEvidence(
+        institution: 'State Bank of India',
+        instrumentLastFour: '1111',
+      ),
+    );
+    expect(result.resolvedAccountId, 1);
+    expect(result.candidateAccountIds, isNot(contains(2)));
+  });
+
+  test('single matching-bank account without suffix is selected safely', () {
+    final result = resolver.resolve([
+      Account(
+        id: 1,
+        displayName: 'SBI savings',
+        institutionId: 'sbi',
+        accountType: AccountType.bankAccount,
+      ),
+      Account(
+        id: 2,
+        displayName: 'HDFC savings',
+        institutionId: 'hdfc',
+        accountType: AccountType.bankAccount,
+        lastFour: '2222',
+      ),
+    ], const AccountResolutionEvidence(institution: 'SBI'));
+    expect(result.resolvedAccountId, 1);
+    expect(result.resolutionStatus, ResolutionStatus.probable);
+    expect(result.candidateAccountIds, isNot(contains(2)));
+  });
+
+  test('conflicting bank and suffix never select the wrong-bank account', () {
+    final result = resolver.resolve(
+      [
+        Account(
+          id: 1,
+          displayName: 'SBI savings',
+          institutionId: 'sbi',
+          accountType: AccountType.bankAccount,
+          lastFour: '1111',
+        ),
+        Account(
+          id: 2,
+          displayName: 'HDFC savings',
+          institutionId: 'hdfc',
+          accountType: AccountType.bankAccount,
+          lastFour: '2222',
+        ),
+      ],
+      const AccountResolutionEvidence(
+        institution: 'SBI',
+        instrumentLastFour: '2222',
+      ),
+    );
+    expect(result.resolvedAccountId, isNull);
+    expect(result.resolutionStatus, ResolutionStatus.newInstrumentCandidate);
+    expect(result.candidateAccountIds, isEmpty);
+  });
+
   test('ambiguous same-bank accounts are not auto-selected', () {
     final result = resolver.resolve([
       Account(

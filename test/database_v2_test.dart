@@ -49,6 +49,27 @@ void main() {
     expect(tableNames, contains(AppDatabase.tableParsedFinancialEvents));
     expect(tableNames, contains(AppDatabase.tableTransactionGroups));
     expect(tableNames, contains(AppDatabase.tableLedgerEntries));
+    expect(tableNames, contains(AppDatabase.tableParsedEventLedgerLinks));
+    expect(tableNames, contains(AppDatabase.tableParsedEventGroupLinks));
+
+    final rawColumns = await db.rawQuery(
+      'PRAGMA table_info(${AppDatabase.tableRawNotificationEvents})',
+    );
+    expect(
+      rawColumns.map((row) => row['name']),
+      containsAll(['exact_duplicate_of_event_id', 'duplicate_rationale']),
+    );
+    final parsedColumns = await db.rawQuery(
+      'PRAGMA table_info(${AppDatabase.tableParsedFinancialEvents})',
+    );
+    expect(
+      parsedColumns.map((row) => row['name']),
+      containsAll([
+        'payment_rail',
+        'ledger_duplicate_confidence',
+        'ledger_duplicate_rationale',
+      ]),
+    );
 
     final indexes = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type = 'index'",
@@ -62,6 +83,9 @@ void main() {
     expect(indexNames, contains('idx_parsed_instrument_last_four'));
     expect(indexNames, contains('idx_raw_supersedes'));
     expect(indexNames, contains('idx_ledger_legacy_transaction'));
+    expect(indexNames, contains('idx_raw_exact_duplicate'));
+    expect(indexNames, contains('idx_event_ledger_link'));
+    expect(indexNames, contains('idx_event_group_link'));
   });
 
   test('version 1 upgrade preserves account and transaction data', () async {

@@ -93,9 +93,12 @@ enum RawNotificationProcessingState {
 
 enum TransactionGroupType {
   purchase,
+  purchaseRefund,
+  partialRefund,
+  reversal,
   transfer,
-  refund,
-  cashFlow,
+  authorizationCompletion,
+  cashbackRelated,
   unknown;
 
   static TransactionGroupType fromStorage(String value) =>

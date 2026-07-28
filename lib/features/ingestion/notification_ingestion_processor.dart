@@ -1,12 +1,15 @@
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/entity_resolution/account_resolver.dart';
 import 'package:expense_tracker/core/entity_resolution/institution_registry.dart';
+import 'package:expense_tracker/core/entity_resolution/related_financial_event_linker.dart';
 import 'package:expense_tracker/core/models/account.dart';
+import 'package:expense_tracker/core/models/event_matching.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/money.dart';
 import 'package:expense_tracker/core/models/parsed_financial_event.dart';
 import 'package:expense_tracker/core/models/raw_notification_event.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
+import 'package:expense_tracker/core/models/transaction_group.dart';
 import 'package:expense_tracker/features/ingestion/notification_identity.dart';
 import 'package:expense_tracker/features/ingestion/notification_parser.dart';
 import 'package:expense_tracker/features/ingestion/notification_source_policy.dart';
@@ -42,7 +45,14 @@ class NotificationEnvelope {
   final bool hasRemoved;
 }
 
-enum IngestionDisposition { ignored, duplicate, retained, provisional, posted }
+enum IngestionDisposition {
+  ignored,
+  sourceDuplicate,
+  ledgerDuplicate,
+  retained,
+  provisional,
+  posted,
+}
 
 class IngestionResult {
   const IngestionResult({
@@ -51,6 +61,8 @@ class IngestionResult {
     this.parsedFinancialEventId,
     this.transactionId,
     this.diagnosticCode,
+    this.duplicateConfidence = 0,
+    this.matchedLedgerEntryId,
   });
 
   final IngestionDisposition disposition;
@@ -58,6 +70,8 @@ class IngestionResult {
   final int? parsedFinancialEventId;
   final int? transactionId;
   final String? diagnosticCode;
+  final double duplicateConfidence;
+  final int? matchedLedgerEntryId;
 }
 
 class NotificationIngestionProcessor {
@@ -117,14 +131,6 @@ class NotificationIngestionProcessor {
       ),
     );
     final rawEvent = rawInsert.event;
-    if (!rawInsert.wasInserted) {
-      return IngestionResult(
-        disposition: IngestionDisposition.duplicate,
-        rawEventId: rawEvent.id,
-        diagnosticCode: 'exact_source_duplicate',
-      );
-    }
-
     final parsed = NotificationParser.pipeline.parse(
       envelope.title ?? '',
       envelope.content ?? '',
@@ -236,6 +242,11 @@ class NotificationIngestionProcessor {
 
     var decision = parsed.decision;
     var failureCode = parsed.failureCode;
+    final paymentRail = _inferPaymentRail(
+      '${envelope.title ?? ''} ${envelope.content ?? ''}',
+    );
+    var duplicateAssessment = const DuplicateAssessment.none();
+    var sourceDuplicate = false;
     IngestionDisposition disposition;
     if (decision == ParseDecision.ignored) {
       disposition = IngestionDisposition.retained;
@@ -255,20 +266,44 @@ class NotificationIngestionProcessor {
     }
 
     if (matchedAccount != null && decision == ParseDecision.autoPost) {
-      final semanticDuplicate = await _database.hasRecentDuplicate(
-        amount: minorToMajor(parsed.selectedAmount!.amountMinor),
-        type: parsed.direction == FinancialDirection.credit
-            ? TransactionType.credit
-            : TransactionType.debit,
-        accountId: matchedAccount.id!,
-        merchant: parsed.merchant.normalized,
-        referenceTime: postedAt,
-        window: const Duration(minutes: 5),
-      );
-      if (semanticDuplicate) {
+      final exactSourceLedgerId = rawEvent.exactDuplicateOfEventId == null
+          ? null
+          : await _database.getLedgerEntryIdForRawEvent(
+              rawEvent.exactDuplicateOfEventId!,
+            );
+      if (exactSourceLedgerId != null) {
+        sourceDuplicate = true;
+        duplicateAssessment = DuplicateAssessment(
+          confidence: 1,
+          rationales: const [MatchRationale.payloadHash],
+          matchedId: exactSourceLedgerId,
+        );
+      } else {
+        final fingerprint = FinancialEventFingerprint(
+          amountMinor: parsed.selectedAmount!.amountMinor,
+          currencyCode: parsed.selectedAmount!.currency,
+          direction: parsed.direction.storageValue,
+          accountId: matchedAccount.id!,
+          merchant: parsed.merchant.normalized,
+          reference: parsed.referenceNumber,
+          paymentRail: paymentRail,
+          occurredAt: parsed.transactionTime ?? postedAt,
+          sourcePackage: envelope.packageName,
+        );
+        duplicateAssessment = const LedgerDuplicateDetector().assess(
+          fingerprint,
+          await _database.getLedgerMatchCandidates(
+            accountId: matchedAccount.id!,
+            occurredAt: parsed.transactionTime ?? postedAt,
+          ),
+        );
+      }
+      if (duplicateAssessment.isDefinitive) {
         decision = ParseDecision.retainOnly;
-        failureCode = 'semantic_duplicate';
-        disposition = IngestionDisposition.retained;
+        failureCode = null;
+        disposition = sourceDuplicate
+            ? IngestionDisposition.sourceDuplicate
+            : IngestionDisposition.ledgerDuplicate;
       }
     }
 
@@ -285,6 +320,7 @@ class NotificationIngestionProcessor {
         institutionId: parsed.institutionId,
         instrumentLastFour: parsed.instrument.lastFour,
         referenceNumber: parsed.referenceNumber,
+        paymentRail: paymentRail,
         transactionOccurredAt: parsed.transactionTime ?? postedAt,
         overallConfidence: parsed.overallConfidence,
         fieldConfidence: {
@@ -293,8 +329,45 @@ class NotificationIngestionProcessor {
         },
         parseDecision: decision,
         failureCode: failureCode,
+        ledgerDuplicateConfidence: duplicateAssessment.confidence,
+        ledgerDuplicateRationale: duplicateAssessment.rationales
+            .map((rationale) => rationale.storageValue)
+            .join(','),
       ),
     );
+
+    if (duplicateAssessment.isDefinitive) {
+      await _database.linkParsedEventToLedger(
+        parsedFinancialEventId: parsedId,
+        ledgerEntryId: duplicateAssessment.matchedId!,
+        assessment: duplicateAssessment,
+      );
+      await _linkRelatedEvent(
+        parsedFinancialEventId: parsedId,
+        eventType: parsed.eventType,
+        direction: parsed.direction,
+        accountId: matchedAccount!.id!,
+        amountMinor: parsed.selectedAmount!.amountMinor,
+        merchant: parsed.merchant.normalized,
+        reference: parsed.referenceNumber,
+        occurredAt: parsed.transactionTime ?? postedAt,
+        sourcePackage: envelope.packageName,
+      );
+      await _database.updateRawNotificationProcessingState(
+        rawEvent.id!,
+        RawNotificationProcessingState.parsed,
+      );
+      return IngestionResult(
+        disposition: disposition,
+        rawEventId: rawEvent.id,
+        parsedFinancialEventId: parsedId,
+        diagnosticCode: sourceDuplicate
+            ? 'exact_source_duplicate'
+            : 'probable_ledger_duplicate',
+        duplicateConfidence: duplicateAssessment.confidence,
+        matchedLedgerEntryId: duplicateAssessment.matchedId,
+      );
+    }
 
     if (decision != ParseDecision.autoPost || matchedAccount == null) {
       await _database.updateRawNotificationProcessingState(
@@ -324,6 +397,17 @@ class NotificationIngestionProcessor {
       ),
       parsedFinancialEventId: parsedId,
     );
+    await _linkRelatedEvent(
+      parsedFinancialEventId: parsedId,
+      eventType: parsed.eventType,
+      direction: parsed.direction,
+      accountId: matchedAccount.id!,
+      amountMinor: parsed.selectedAmount!.amountMinor,
+      merchant: parsed.merchant.normalized,
+      reference: parsed.referenceNumber,
+      occurredAt: parsed.transactionTime ?? postedAt,
+      sourcePackage: envelope.packageName,
+    );
     await _database.updateRawNotificationProcessingState(
       rawEvent.id!,
       RawNotificationProcessingState.posted,
@@ -350,5 +434,113 @@ class NotificationIngestionProcessor {
       caseSensitive: false,
     ).hasMatch(text);
     return hasAmount && hasAction && hasInstrumentOrReference;
+  }
+
+  String? _inferPaymentRail(String text) {
+    final normalized = text.toLowerCase();
+    if (RegExp(r'\bupi\b').hasMatch(normalized)) return 'upi';
+    if (RegExp(r'\b(?:imps|neft|rtgs)\b').hasMatch(normalized)) {
+      return RegExp(r'\b(?:imps|neft|rtgs)\b').firstMatch(normalized)?.group(0);
+    }
+    if (RegExp(r'\bcard\b').hasMatch(normalized)) return 'card';
+    if (RegExp(r'\bwallet\b').hasMatch(normalized)) return 'wallet';
+    return null;
+  }
+
+  Future<void> _linkRelatedEvent({
+    required int parsedFinancialEventId,
+    required FinancialEventType eventType,
+    required FinancialDirection direction,
+    required int accountId,
+    required int amountMinor,
+    required String? merchant,
+    required String? reference,
+    required DateTime occurredAt,
+    required String sourcePackage,
+  }) async {
+    final incoming = RelatedFinancialEvent(
+      eventType: eventType,
+      direction: direction,
+      accountId: accountId,
+      amountMinor: amountMinor,
+      merchant: merchant,
+      transactionReference: reference,
+      refundOrOrderReference: reference,
+      occurredAt: occurredAt,
+      sourcePackage: sourcePackage,
+    );
+    final candidateRows = await _database.getRelatedGroupCandidates(
+      accountId: accountId,
+    );
+    final candidates = candidateRows.map((row) {
+      return RelatedEventCandidate(
+        transactionGroupId: row['transaction_group_id'] as int,
+        anchor: RelatedFinancialEvent(
+          eventType: FinancialEventType.fromStorage(
+            row['event_type'] as String,
+          ),
+          direction: FinancialDirection.fromStorage(row['direction'] as String),
+          accountId: accountId,
+          amountMinor: row['amount_minor'] as int,
+          merchant: row['merchant_normalized'] as String?,
+          transactionReference: row['reference_number'] as String?,
+          refundOrOrderReference: row['reference_number'] as String?,
+          occurredAt: DateTime.parse(row['transaction_occurred_at'] as String),
+          sourcePackage: row['package_name'] as String,
+        ),
+      );
+    }).toList();
+    final assessment = const RelatedFinancialEventLinker().link(
+      incoming,
+      candidates,
+    );
+
+    int groupId;
+    if (assessment.matchedId != null && !assessment.ambiguous) {
+      groupId = assessment.matchedId!;
+      await _database.updateTransactionGroupType(
+        groupId,
+        transactionGroupTypeFor(
+          eventType: eventType,
+          hasOriginalPurchase: true,
+        ),
+      );
+      await _database.linkParsedEventToGroup(
+        parsedFinancialEventId: parsedFinancialEventId,
+        transactionGroupId: groupId,
+        assessment: assessment,
+      );
+      return;
+    }
+
+    final now = DateTime.now().toUtc();
+    groupId = await _database.createTransactionGroup(
+      TransactionGroup(
+        groupType: transactionGroupTypeFor(
+          eventType: eventType,
+          hasOriginalPurchase: false,
+        ),
+        merchantNormalized: merchant,
+        originalAmountMinor: direction == FinancialDirection.debit
+            ? amountMinor
+            : null,
+        completedRefundAmountMinor: eventType == FinancialEventType.refund
+            ? amountMinor
+            : 0,
+        netExpenseMinor: direction == FinancialDirection.debit
+            ? amountMinor
+            : -amountMinor,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    await _database.linkParsedEventToGroup(
+      parsedFinancialEventId: parsedFinancialEventId,
+      transactionGroupId: groupId,
+      assessment: const DuplicateAssessment(
+        confidence: 1,
+        rationales: [MatchRationale.compatibleEventSequence],
+      ),
+    );
   }
 }

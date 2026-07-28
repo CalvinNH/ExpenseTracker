@@ -16,6 +16,8 @@ class RawNotificationEvent {
     required this.processingState,
     this.structuralFingerprint,
     this.supersedesEventId,
+    this.exactDuplicateOfEventId,
+    this.duplicateRationale,
   });
 
   final int? id;
@@ -32,6 +34,8 @@ class RawNotificationEvent {
   final RawNotificationProcessingState processingState;
   final String? structuralFingerprint;
   final int? supersedesEventId;
+  final int? exactDuplicateOfEventId;
+  final String? duplicateRationale;
 
   Map<String, Object?> toMap() => {
     if (id != null) 'id': id,
@@ -48,6 +52,8 @@ class RawNotificationEvent {
     'processing_state': processingState.storageValue,
     'structural_fingerprint': structuralFingerprint,
     'supersedes_event_id': supersedesEventId,
+    'exact_duplicate_of_event_id': exactDuplicateOfEventId,
+    'duplicate_rationale': duplicateRationale,
   };
 
   factory RawNotificationEvent.fromMap(Map<String, Object?> map) {
@@ -68,6 +74,8 @@ class RawNotificationEvent {
       ),
       structuralFingerprint: map['structural_fingerprint'] as String?,
       supersedesEventId: map['supersedes_event_id'] as int?,
+      exactDuplicateOfEventId: map['exact_duplicate_of_event_id'] as int?,
+      duplicateRationale: map['duplicate_rationale'] as String?,
     );
   }
 }
@@ -80,4 +88,6 @@ class RawNotificationInsertResult {
 
   final RawNotificationEvent event;
   final bool wasInserted;
+
+  bool get isExactDuplicate => event.exactDuplicateOfEventId != null;
 }

@@ -229,13 +229,161 @@ void main() {
     final second = await processor.ingest(notification);
 
     expect(first.disposition, IngestionDisposition.posted);
-    expect(second.disposition, IngestionDisposition.duplicate);
-    expect(second.rawEventId, first.rawEventId);
+    expect(second.disposition, IngestionDisposition.sourceDuplicate);
+    expect(second.rawEventId, isNot(first.rawEventId));
+    expect(second.duplicateConfidence, 1);
     expect(
       await AppDatabase.instance.getAllRawNotificationEvents(),
-      hasLength(1),
+      hasLength(2),
     );
     expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+    expect(
+      await AppDatabase.instance.getParsedEventLedgerLinks(),
+      hasLength(2),
+    );
+  });
+
+  test('same transaction reported by bank and UPI app shares one ledger', () async {
+    await createHdfcAccount();
+    final processor = NotificationIngestionProcessor();
+    final first = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        content:
+            'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR ABC123456',
+      ),
+    );
+    final second = await processor.ingest(
+      envelope(
+        packageName: 'com.google.android.apps.nbu.paisa.user',
+        notificationId: 20,
+        content:
+            'UPI payment INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR ABC123456',
+      ),
+    );
+
+    expect(first.disposition, IngestionDisposition.posted);
+    expect(second.disposition, IngestionDisposition.ledgerDuplicate);
+    expect(second.duplicateConfidence, greaterThanOrEqualTo(.85));
+    expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+    expect(
+      await AppDatabase.instance.getAllRawNotificationEvents(),
+      hasLength(2),
+    );
+    expect(
+      await AppDatabase.instance.getParsedEventLedgerLinks(),
+      hasLength(2),
+    );
+  });
+
+  test('two real INR 1000 transactions within 30 seconds both post', () async {
+    await createHdfcAccount();
+    final processor = NotificationIngestionProcessor();
+    final first = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        content:
+            'INR 1,000.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR REALTXN001',
+      ),
+    );
+    final second = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 11,
+        eventTime: postedAt.add(const Duration(seconds: 20)),
+        content:
+            'INR 1,000.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR REALTXN002',
+      ),
+    );
+
+    expect(first.disposition, IngestionDisposition.posted);
+    expect(second.disposition, IngestionDisposition.posted);
+    expect(await AppDatabase.instance.getAllTransactions(), hasLength(2));
+  });
+
+  test('same amount and merchant on different accounts both post', () async {
+    await createHdfcAccount();
+    await AppDatabase.instance.createAccount(
+      Account(
+        displayName: 'HDFC Savings XX5678',
+        institutionId: 'hdfc',
+        accountType: AccountType.bankAccount,
+        lastFour: '5678',
+        openingBalanceMinor: 100000,
+      ),
+    );
+    final processor = NotificationIngestionProcessor();
+    final first = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        content:
+            'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR ACCOUNT001',
+      ),
+    );
+    final second = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 12,
+        content:
+            'INR 100.00 debited from HDFC Bank A/c XX5678 at Cafe. UTR ACCOUNT002',
+      ),
+    );
+
+    expect(first.disposition, IngestionDisposition.posted);
+    expect(second.disposition, IngestionDisposition.posted);
+    final transactions = await AppDatabase.instance.getAllTransactions();
+    expect(transactions, hasLength(2));
+    expect(transactions.map((transaction) => transaction.accountId).toSet(), {
+      1,
+      2,
+    });
+  });
+
+  test('related event grouping preserves every source and parsed event', () async {
+    await createHdfcAccount();
+    final processor = NotificationIngestionProcessor();
+    final purchase = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        content:
+            'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR ORDER12345',
+      ),
+    );
+    final refund = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 13,
+        eventTime: postedAt.add(const Duration(days: 1)),
+        content:
+            'Refund INR 100.00 credited to HDFC Bank A/c XX1234 from Cafe. Ref ORDER12345',
+      ),
+    );
+    expect(
+      await AppDatabase.instance.getAllRawNotificationEvents(),
+      hasLength(2),
+    );
+    final groupLinks = await AppDatabase.instance.getParsedEventGroupLinks();
+    expect(groupLinks, hasLength(2));
+    expect(
+      groupLinks.map((link) => link['transaction_group_id']).toSet(),
+      hasLength(1),
+    );
+    final group = await AppDatabase.instance.getTransactionGroup(
+      groupLinks.first['transaction_group_id'] as int,
+    );
+    expect(group?.groupType, TransactionGroupType.purchaseRefund);
+    expect(
+      await AppDatabase.instance.getParsedFinancialEvent(
+        purchase.parsedFinancialEventId!,
+      ),
+      isNotNull,
+    );
+    expect(
+      await AppDatabase.instance.getParsedFinancialEvent(
+        refund.parsedFinancialEventId!,
+      ),
+      isNotNull,
+    );
   });
 
   test(

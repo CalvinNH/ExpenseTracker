@@ -82,6 +82,15 @@ class AccountResolver {
       if (both.length > 1) {
         return _ambiguous(both, 1, MatchedEvidence.suffixAndInstitution);
       }
+      if (institution != null) {
+        return const AccountResolutionResult(
+          resolvedAccountId: null,
+          resolutionStatus: ResolutionStatus.newInstrumentCandidate,
+          confidence: .9,
+          matchedEvidence: [MatchedEvidence.suffixAndInstitution],
+          candidateAccountIds: [],
+        );
+      }
       if (suffixMatches.length == 1) {
         return _resolved(
           suffixMatches.single,
@@ -218,15 +227,6 @@ class AccountResolver {
       }
     }
 
-    if (suffix != null && institution != null) {
-      return const AccountResolutionResult(
-        resolvedAccountId: null,
-        resolutionStatus: ResolutionStatus.newInstrumentCandidate,
-        confidence: .9,
-        matchedEvidence: [MatchedEvidence.suffixAndInstitution],
-        candidateAccountIds: [],
-      );
-    }
     return const AccountResolutionResult(
       resolvedAccountId: null,
       resolutionStatus: ResolutionStatus.unresolved,
