@@ -105,6 +105,18 @@ enum TransactionGroupType {
       enumFromStorage(values, value, fallback: TransactionGroupType.unknown);
 }
 
+enum TransferType {
+  ownAccount,
+  external,
+  walletLoad,
+  walletWithdrawal,
+  creditCardPayment,
+  unknown;
+
+  static TransferType fromStorage(String value) =>
+      enumFromStorage(values, value, fallback: TransferType.unknown);
+}
+
 enum LedgerEventRole {
   primary,
   refund,

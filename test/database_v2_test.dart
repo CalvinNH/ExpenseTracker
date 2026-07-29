@@ -70,6 +70,18 @@ void main() {
         'ledger_duplicate_rationale',
       ]),
     );
+    final groupColumns = await db.rawQuery(
+      'PRAGMA table_info(${AppDatabase.tableTransactionGroups})',
+    );
+    expect(
+      groupColumns.map((row) => row['name']),
+      containsAll([
+        'refundable_amount_minor',
+        'transfer_type',
+        'is_inconsistent',
+        'inconsistency_reason',
+      ]),
+    );
 
     final indexes = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type = 'index'",

@@ -23,7 +23,7 @@ class AppDatabase {
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 5;
+  static const databaseVersion = 6;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -167,6 +167,8 @@ class AppDatabase {
           await _createAccountMergesTable(db);
         case 4:
           await _upgradeFrom4To5(db);
+        case 5:
+          await _upgradeFrom5To6(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -306,6 +308,39 @@ class AppDatabase {
     }
   }
 
+  Future<void> _upgradeFrom5To6(Database db) async {
+    if (!await _tableExists(db, tableTransactionGroups)) return;
+    await _addColumnIfMissing(
+      db,
+      tableTransactionGroups,
+      'refundable_amount_minor',
+      'INTEGER',
+    );
+    await _addColumnIfMissing(
+      db,
+      tableTransactionGroups,
+      'transfer_type',
+      'TEXT',
+    );
+    await _addColumnIfMissing(
+      db,
+      tableTransactionGroups,
+      'is_inconsistent',
+      'INTEGER NOT NULL DEFAULT 0',
+    );
+    await _addColumnIfMissing(
+      db,
+      tableTransactionGroups,
+      'inconsistency_reason',
+      'TEXT',
+    );
+    await db.execute(
+      'UPDATE $tableTransactionGroups '
+      'SET refundable_amount_minor = original_amount_minor '
+      'WHERE refundable_amount_minor IS NULL',
+    );
+  }
+
   Future<bool> _tableExists(Database db, String table) async {
     final rows = await db.query(
       'sqlite_master',
@@ -405,8 +440,12 @@ class AppDatabase {
         merchant_normalized TEXT,
         category TEXT,
         original_amount_minor INTEGER,
+        refundable_amount_minor INTEGER,
         completed_refund_amount_minor INTEGER NOT NULL DEFAULT 0,
         net_expense_minor INTEGER NOT NULL,
+        transfer_type TEXT,
+        is_inconsistent INTEGER NOT NULL DEFAULT 0,
+        inconsistency_reason TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -1217,6 +1256,55 @@ class AppDatabase {
     return rows.isEmpty ? null : rows.single['ledger_id'] as int;
   }
 
+  Future<void> updateLedgerCategoryForParsedEvent(
+    int parsedFinancialEventId,
+    String? category,
+  ) async {
+    final db = await database;
+    await db.rawUpdate(
+      '''
+      UPDATE $tableLedgerEntries
+      SET category = ?
+      WHERE id IN (
+        SELECT ledger_entry_id
+        FROM $tableParsedEventLedgerLinks
+        WHERE parsed_financial_event_id = ?
+      )
+      ''',
+      [category, parsedFinancialEventId],
+    );
+    final parsedRows = await db.query(
+      tableParsedFinancialEvents,
+      columns: ['id'],
+      where: 'id = ?',
+      whereArgs: [parsedFinancialEventId],
+      limit: 1,
+    );
+    if (parsedRows.isNotEmpty) {
+      await db.rawUpdate(
+        '''
+        UPDATE $tableTransactions
+        SET category = ?
+        WHERE id IN (
+          SELECT legacy_transaction_id
+          FROM $tableLedgerEntries
+          WHERE parsed_financial_event_id = ?
+             OR id IN (
+               SELECT ledger_entry_id
+               FROM $tableParsedEventLedgerLinks
+               WHERE parsed_financial_event_id = ?
+             )
+        )
+        ''',
+        [
+          category ?? 'Uncategorized',
+          parsedFinancialEventId,
+          parsedFinancialEventId,
+        ],
+      );
+    }
+  }
+
   Future<void> linkParsedEventToGroup({
     required int parsedFinancialEventId,
     required int transactionGroupId,
@@ -1243,7 +1331,7 @@ class AppDatabase {
   }
 
   Future<List<Map<String, Object?>>> getRelatedGroupCandidates({
-    required int accountId,
+    int? accountId,
   }) async {
     final db = await database;
     return db.rawQuery(
@@ -1253,6 +1341,7 @@ class AppDatabase {
         p.event_type,
         p.direction,
         p.amount_minor,
+        l.account_id,
         p.merchant_normalized,
         p.reference_number,
         p.transaction_occurred_at,
@@ -1266,10 +1355,10 @@ class AppDatabase {
         ON pel.parsed_financial_event_id = p.id
       JOIN $tableLedgerEntries l
         ON l.id = pel.ledger_entry_id
-      WHERE l.account_id = ?
+      ${accountId == null ? '' : 'WHERE l.account_id = ?'}
       ORDER BY p.transaction_occurred_at DESC, p.id DESC
       ''',
-      [accountId],
+      [?accountId],
     );
   }
 
@@ -1316,6 +1405,30 @@ class AppDatabase {
     return rows.isEmpty ? null : TransactionGroup.fromMap(rows.first);
   }
 
+  Future<void> updateTransactionGroupLifecycle({
+    required int transactionGroupId,
+    required TransactionGroupType groupType,
+    required int completedRefundAmountMinor,
+    required int netExpenseMinor,
+    required bool isInconsistent,
+    String? inconsistencyReason,
+  }) async {
+    final db = await database;
+    await db.update(
+      tableTransactionGroups,
+      {
+        'group_type': groupType.storageValue,
+        'completed_refund_amount_minor': completedRefundAmountMinor,
+        'net_expense_minor': netExpenseMinor,
+        'is_inconsistent': isInconsistent ? 1 : 0,
+        'inconsistency_reason': inconsistencyReason,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [transactionGroupId],
+    );
+  }
+
   Future<int> createLedgerEntry(LedgerEntry entry) async {
     if (entry.amountMinor < 0) {
       throw ArgumentError.value(
@@ -1341,6 +1454,19 @@ class AppDatabase {
       limit: 1,
     );
     return rows.isEmpty ? null : LedgerEntry.fromMap(rows.first);
+  }
+
+  Future<List<LedgerEntry>> getLedgerEntriesByGroup(
+    int transactionGroupId,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      tableLedgerEntries,
+      where: 'transaction_group_id = ?',
+      whereArgs: [transactionGroupId],
+      orderBy: 'occurred_at ASC, id ASC',
+    );
+    return rows.map(LedgerEntry.fromMap).toList();
   }
 
   Future<int> rebuildAccountBalance(int accountId) async {

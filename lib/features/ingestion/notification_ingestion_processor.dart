@@ -245,12 +245,21 @@ class NotificationIngestionProcessor {
     final paymentRail = _inferPaymentRail(
       '${envelope.title ?? ''} ${envelope.content ?? ''}',
     );
+    final transactionCategory = NotificationParser.categorizeMerchant(
+      parsed.merchant.normalized ?? '',
+    );
     var duplicateAssessment = const DuplicateAssessment.none();
     var sourceDuplicate = false;
     IngestionDisposition disposition;
     if (decision == ParseDecision.ignored) {
       disposition = IngestionDisposition.retained;
     } else if (decision == ParseDecision.retainOnly) {
+      disposition = IngestionDisposition.retained;
+    } else if ((parsed.eventType == FinancialEventType.refund ||
+            parsed.eventType == FinancialEventType.reversal) &&
+        parsed.status != FinancialEventStatus.completed) {
+      decision = ParseDecision.retainOnly;
+      failureCode = null;
       disposition = IngestionDisposition.retained;
     } else if (unknownSourceNeedsEvidence && !hasStrongEvidence) {
       decision = ParseDecision.retainOnly;
@@ -345,10 +354,12 @@ class NotificationIngestionProcessor {
       await _linkRelatedEvent(
         parsedFinancialEventId: parsedId,
         eventType: parsed.eventType,
+        status: parsed.status,
         direction: parsed.direction,
         accountId: matchedAccount!.id!,
         amountMinor: parsed.selectedAmount!.amountMinor,
         merchant: parsed.merchant.normalized,
+        category: transactionCategory,
         reference: parsed.referenceNumber,
         occurredAt: parsed.transactionTime ?? postedAt,
         sourcePackage: envelope.packageName,
@@ -370,6 +381,24 @@ class NotificationIngestionProcessor {
     }
 
     if (decision != ParseDecision.autoPost || matchedAccount == null) {
+      if (matchedAccount != null &&
+          (parsed.eventType == FinancialEventType.refund ||
+              parsed.eventType == FinancialEventType.reversal) &&
+          parsed.status != FinancialEventStatus.completed) {
+        await _linkRelatedEvent(
+          parsedFinancialEventId: parsedId,
+          eventType: parsed.eventType,
+          status: parsed.status,
+          direction: parsed.direction,
+          accountId: matchedAccount.id!,
+          amountMinor: parsed.selectedAmount!.amountMinor,
+          merchant: parsed.merchant.normalized,
+          category: transactionCategory,
+          reference: parsed.referenceNumber,
+          occurredAt: parsed.transactionTime ?? postedAt,
+          sourcePackage: envelope.packageName,
+        );
+      }
       await _database.updateRawNotificationProcessingState(
         rawEvent.id!,
         RawNotificationProcessingState.parsed,
@@ -390,9 +419,7 @@ class NotificationIngestionProcessor {
             : TransactionType.debit,
         timestamp: parsed.transactionTime ?? postedAt,
         merchant: parsed.merchant.raw ?? 'Unknown',
-        category: NotificationParser.categorizeMerchant(
-          parsed.merchant.normalized ?? '',
-        ),
+        category: transactionCategory,
         accountId: matchedAccount.id!,
       ),
       parsedFinancialEventId: parsedId,
@@ -400,10 +427,12 @@ class NotificationIngestionProcessor {
     await _linkRelatedEvent(
       parsedFinancialEventId: parsedId,
       eventType: parsed.eventType,
+      status: parsed.status,
       direction: parsed.direction,
       accountId: matchedAccount.id!,
       amountMinor: parsed.selectedAmount!.amountMinor,
       merchant: parsed.merchant.normalized,
+      category: transactionCategory,
       reference: parsed.referenceNumber,
       occurredAt: parsed.transactionTime ?? postedAt,
       sourcePackage: envelope.packageName,
@@ -450,10 +479,12 @@ class NotificationIngestionProcessor {
   Future<void> _linkRelatedEvent({
     required int parsedFinancialEventId,
     required FinancialEventType eventType,
+    required FinancialEventStatus status,
     required FinancialDirection direction,
     required int accountId,
     required int amountMinor,
     required String? merchant,
+    required String category,
     required String? reference,
     required DateTime occurredAt,
     required String sourcePackage,
@@ -470,7 +501,12 @@ class NotificationIngestionProcessor {
       sourcePackage: sourcePackage,
     );
     final candidateRows = await _database.getRelatedGroupCandidates(
-      accountId: accountId,
+      accountId:
+          eventType == FinancialEventType.refund ||
+              eventType == FinancialEventType.reversal ||
+              eventType == FinancialEventType.cashback
+          ? null
+          : accountId,
     );
     final candidates = candidateRows.map((row) {
       return RelatedEventCandidate(
@@ -480,7 +516,7 @@ class NotificationIngestionProcessor {
             row['event_type'] as String,
           ),
           direction: FinancialDirection.fromStorage(row['direction'] as String),
-          accountId: accountId,
+          accountId: row['account_id'] as int? ?? accountId,
           amountMinor: row['amount_minor'] as int,
           merchant: row['merchant_normalized'] as String?,
           transactionReference: row['reference_number'] as String?,
@@ -498,13 +534,55 @@ class NotificationIngestionProcessor {
     int groupId;
     if (assessment.matchedId != null && !assessment.ambiguous) {
       groupId = assessment.matchedId!;
-      await _database.updateTransactionGroupType(
-        groupId,
-        transactionGroupTypeFor(
-          eventType: eventType,
-          hasOriginalPurchase: true,
-        ),
-      );
+      if (status == FinancialEventStatus.completed) {
+        final group = await _database.getTransactionGroup(groupId);
+        if (group != null &&
+            eventType == FinancialEventType.refund &&
+            group.originalAmountMinor != null) {
+          final completed = group.completedRefundAmountMinor + amountMinor;
+          final refundable =
+              group.refundableAmountMinor ?? group.originalAmountMinor!;
+          final excess = completed > refundable;
+          await _database.updateTransactionGroupLifecycle(
+            transactionGroupId: groupId,
+            groupType: completed == refundable
+                ? TransactionGroupType.purchaseRefund
+                : TransactionGroupType.partialRefund,
+            completedRefundAmountMinor: completed,
+            netExpenseMinor: group.originalAmountMinor! - completed,
+            isInconsistent: group.isInconsistent || excess,
+            inconsistencyReason: excess
+                ? 'completed_refund_exceeds_refundable_amount'
+                : group.inconsistencyReason,
+          );
+          if (assessment.confidence >= .85) {
+            final refundCategory = group.category?.toLowerCase() == 'salary'
+                ? null
+                : group.category;
+            await _database.updateLedgerCategoryForParsedEvent(
+              parsedFinancialEventId,
+              refundCategory,
+            );
+          }
+        } else if (group != null && eventType == FinancialEventType.reversal) {
+          await _database.updateTransactionGroupLifecycle(
+            transactionGroupId: groupId,
+            groupType: TransactionGroupType.reversal,
+            completedRefundAmountMinor: group.completedRefundAmountMinor,
+            netExpenseMinor: 0,
+            isInconsistent: group.isInconsistent,
+            inconsistencyReason: group.inconsistencyReason,
+          );
+        } else {
+          await _database.updateTransactionGroupType(
+            groupId,
+            transactionGroupTypeFor(
+              eventType: eventType,
+              hasOriginalPurchase: true,
+            ),
+          );
+        }
+      }
       await _database.linkParsedEventToGroup(
         parsedFinancialEventId: parsedFinancialEventId,
         transactionGroupId: groupId,
@@ -521,13 +599,25 @@ class NotificationIngestionProcessor {
           hasOriginalPurchase: false,
         ),
         merchantNormalized: merchant,
+        category:
+            eventType == FinancialEventType.refund &&
+                category.toLowerCase() == 'salary'
+            ? null
+            : category,
         originalAmountMinor: direction == FinancialDirection.debit
             ? amountMinor
             : null,
-        completedRefundAmountMinor: eventType == FinancialEventType.refund
+        refundableAmountMinor: direction == FinancialDirection.debit
+            ? amountMinor
+            : null,
+        completedRefundAmountMinor:
+            eventType == FinancialEventType.refund &&
+                status == FinancialEventStatus.completed
             ? amountMinor
             : 0,
-        netExpenseMinor: direction == FinancialDirection.debit
+        netExpenseMinor: status != FinancialEventStatus.completed
+            ? 0
+            : direction == FinancialDirection.debit
             ? amountMinor
             : -amountMinor,
         createdAt: now,

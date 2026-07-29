@@ -7,8 +7,12 @@ class TransactionGroup {
     this.merchantNormalized,
     this.category,
     this.originalAmountMinor,
+    this.refundableAmountMinor,
     this.completedRefundAmountMinor = 0,
     required this.netExpenseMinor,
+    this.transferType,
+    this.isInconsistent = false,
+    this.inconsistencyReason,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -18,8 +22,12 @@ class TransactionGroup {
   final String? merchantNormalized;
   final String? category;
   final int? originalAmountMinor;
+  final int? refundableAmountMinor;
   final int completedRefundAmountMinor;
   final int netExpenseMinor;
+  final TransferType? transferType;
+  final bool isInconsistent;
+  final String? inconsistencyReason;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -29,8 +37,12 @@ class TransactionGroup {
     'merchant_normalized': merchantNormalized,
     'category': category,
     'original_amount_minor': originalAmountMinor,
+    'refundable_amount_minor': refundableAmountMinor,
     'completed_refund_amount_minor': completedRefundAmountMinor,
     'net_expense_minor': netExpenseMinor,
+    'transfer_type': transferType?.storageValue,
+    'is_inconsistent': isInconsistent ? 1 : 0,
+    'inconsistency_reason': inconsistencyReason,
     'created_at': createdAt.toIso8601String(),
     'updated_at': updatedAt.toIso8601String(),
   };
@@ -42,8 +54,14 @@ class TransactionGroup {
       merchantNormalized: map['merchant_normalized'] as String?,
       category: map['category'] as String?,
       originalAmountMinor: map['original_amount_minor'] as int?,
+      refundableAmountMinor: map['refundable_amount_minor'] as int?,
       completedRefundAmountMinor: map['completed_refund_amount_minor'] as int,
       netExpenseMinor: map['net_expense_minor'] as int,
+      transferType: map['transfer_type'] == null
+          ? null
+          : TransferType.fromStorage(map['transfer_type'] as String),
+      isInconsistent: (map['is_inconsistent'] as int? ?? 0) == 1,
+      inconsistencyReason: map['inconsistency_reason'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
     );

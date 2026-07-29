@@ -372,6 +372,10 @@ void main() {
       groupLinks.first['transaction_group_id'] as int,
     );
     expect(group?.groupType, TransactionGroupType.purchaseRefund);
+    expect(group?.originalAmountMinor, 10000);
+    expect(group?.completedRefundAmountMinor, 10000);
+    expect(group?.netExpenseMinor, 0);
+    expect(group?.category?.toLowerCase(), isNot('salary'));
     expect(
       await AppDatabase.instance.getParsedFinancialEvent(
         purchase.parsedFinancialEventId!,
@@ -384,6 +388,37 @@ void main() {
       ),
       isNotNull,
     );
+  });
+
+  test('refund initiated notification does not create ledger movement', () async {
+    await createHdfcAccount();
+    final processor = NotificationIngestionProcessor();
+    await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        content:
+            'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. UTR REFUND1234',
+      ),
+    );
+    final initiated = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 14,
+        eventTime: postedAt.add(const Duration(hours: 1)),
+        content:
+            'Refund of INR 100.00 initiated to HDFC Bank A/c XX1234 from Cafe. Ref REFUND1234',
+      ),
+    );
+
+    expect(initiated.disposition, IngestionDisposition.retained);
+    expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+    final db = await AppDatabase.instance.database;
+    expect(await db.query(AppDatabase.tableLedgerEntries), hasLength(1));
+    expect(
+      await AppDatabase.instance.getAllRawNotificationEvents(),
+      hasLength(2),
+    );
+    expect(await AppDatabase.instance.getParsedEventGroupLinks(), hasLength(2));
   });
 
   test(

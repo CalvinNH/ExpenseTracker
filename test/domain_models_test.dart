@@ -31,6 +31,9 @@ void main() {
     for (final value in AccountType.values) {
       expect(AccountType.fromStorage(value.storageValue), same(value));
     }
+    for (final value in TransferType.values) {
+      expect(TransferType.fromStorage(value.storageValue), same(value));
+    }
 
     expect(
       FinancialDirection.fromStorage('future_value'),

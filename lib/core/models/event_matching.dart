@@ -125,6 +125,9 @@ class LedgerDuplicateDetector {
     var score = 0.0;
 
     final reference = _normalize(incoming.reference);
+    if (_normalize(incoming.direction) != _normalize(existing.direction)) {
+      return const DuplicateAssessment.none();
+    }
     if (reference != null && reference == _normalize(existing.reference)) {
       score += .58;
       rationales.add(MatchRationale.transactionReference);
@@ -140,9 +143,7 @@ class LedgerDuplicateDetector {
         _normalize(existing.currencyCode)) {
       score += .04;
     }
-    if (_normalize(incoming.direction) == _normalize(existing.direction)) {
-      score += .07;
-    }
+    score += .07;
     if (_sameNonEmpty(incoming.merchant, existing.merchant)) {
       score += .06;
       rationales.add(MatchRationale.merchantAndAmount);

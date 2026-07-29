@@ -33,6 +33,12 @@ class LedgerEntry {
   final bool isProvisional;
   final DateTime createdAt;
 
+  /// Refunds, reversals, and transfer counterpart entries are credits but are
+  /// not income. Only a primary credit can represent income at ledger level.
+  bool get countsAsIncome =>
+      direction == FinancialDirection.credit &&
+      eventRole == LedgerEventRole.primary;
+
   Map<String, Object?> toMap() => {
     if (id != null) 'id': id,
     'transaction_group_id': transactionGroupId,
