@@ -1,6 +1,8 @@
 import 'package:collection/collection.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
+import 'package:expense_tracker/core/models/money.dart';
+import 'package:expense_tracker/core/models/review_transaction.dart';
 import 'package:expense_tracker/core/services/manual_transaction_service.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
@@ -12,9 +14,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class AddEditTransactionSheet extends StatefulWidget {
-  const AddEditTransactionSheet({super.key, this.existingTransaction});
+  const AddEditTransactionSheet({
+    super.key,
+    this.existingTransaction,
+    this.reviewTransaction,
+  }) : assert(existingTransaction == null || reviewTransaction == null);
 
   final Transaction? existingTransaction;
+  final ReviewTransaction? reviewTransaction;
 
   @override
   State<AddEditTransactionSheet> createState() =>
@@ -36,6 +43,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
   bool _isSaving = false;
 
   bool get _isEditing => widget.existingTransaction != null;
+  bool get _isReviewing => widget.reviewTransaction != null;
 
   static const _categories = [
     'Food & Dining',
@@ -63,6 +71,21 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
       _selectedAccountId = existing.accountId;
       _selectedDateTime = existing.timestamp;
     }
+    final review = widget.reviewTransaction;
+    if (review != null) {
+      final parsed = review.parsedEvent;
+      _amountController.text = minorToMajor(parsed.amountMinor!).toStringAsFixed(2);
+      _merchantController.text =
+          parsed.merchantRaw ?? parsed.merchantNormalized ?? 'Unspecified merchant';
+      _selectedType = parsed.direction == FinancialDirection.credit
+          ? TransactionType.credit
+          : TransactionType.debit;
+      final category = NotificationParser.categorizeMerchant(
+        parsed.merchantNormalized ?? parsed.merchantRaw ?? '',
+      );
+      _selectedCategory = _categories.contains(category) ? category : 'Others';
+      _selectedDateTime = review.suggestedOccurredAt;
+    }
   }
 
   @override
@@ -78,7 +101,29 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
       setState(() {
         _accounts = accounts;
         _isLoadingAccounts = false;
-        if (!_isEditing && accounts.length == 1) {
+        if (_isReviewing) {
+          final parsed = widget.reviewTransaction!.parsedEvent;
+          final matchingInstrument = accounts.where(
+            (account) =>
+                parsed.instrumentLastFour != null &&
+                account.lastFour == parsed.instrumentLastFour,
+          );
+          final matchingInstitution = matchingInstrument.where(
+            (account) =>
+                parsed.institutionId != null &&
+                account.institutionId == parsed.institutionId,
+          );
+          _selectedAccountId = (matchingInstitution.isNotEmpty
+                  ? matchingInstitution.first
+                  : matchingInstrument.isNotEmpty
+                  ? matchingInstrument.first
+                  : accounts.where(
+                      (account) =>
+                          parsed.institutionId != null &&
+                          account.institutionId == parsed.institutionId,
+                    ).firstOrNull)
+              ?.id;
+        } else if (!_isEditing && accounts.length == 1) {
           _selectedAccountId = accounts.first.id;
         }
       });
@@ -388,9 +433,8 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
     try {
       final amount = double.parse(_amountController.text.trim());
       final merchant = _merchantController.text.trim();
-      final manualTransactions = ManualTransactionService();
-
       if (_isEditing) {
+        final manualTransactions = ManualTransactionService();
         final updated = widget.existingTransaction!.copyWith(
           amount: amount,
           type: _selectedType,
@@ -409,7 +453,14 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
           category: _selectedCategory,
           accountId: _selectedAccountId!,
         );
-        await manualTransactions.create(newTxn);
+        if (_isReviewing) {
+          await AppDatabase.instance.resolveReviewedTransaction(
+            parsedFinancialEventId: widget.reviewTransaction!.parsedEvent.id!,
+            transaction: newTxn,
+          );
+        } else {
+          await ManualTransactionService().create(newTxn);
+        }
       }
 
       NotificationService.notifyTransactionIngested();
@@ -610,7 +661,11 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                 children: [
                   Expanded(
                     child: Text(
-                      _isEditing ? 'Edit transaction' : 'Add transaction',
+                      _isEditing
+                          ? 'Edit transaction'
+                          : _isReviewing
+                          ? 'Review transaction'
+                          : 'Add transaction',
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.titleLarge?.copyWith(
                         fontSize: 22,
@@ -651,7 +706,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                 ],
               ),
 
-              if (!_isEditing) ...[
+              if (!_isEditing && !_isReviewing) ...[
                 const SizedBox(height: 12),
                 InkWell(
                   onTap: _pasteAndParseSmsText,

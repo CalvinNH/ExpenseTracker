@@ -355,6 +355,12 @@ class DefaultDirectionExtractor implements DirectionExtractor {
       text,
       r'\b(debited|paid|sent|spent|withdrawn|deducted|purchased)\b',
     );
+    // Card-network notifications sometimes omit an explicit debit verb, but a
+    // card transaction amount followed by a merchant is an unambiguous spend.
+    final cardMerchantPurchase = _has(
+      text,
+      r'\btransaction\s+of\b(?=.{0,100}\b(?:card|merchant|at)\b)',
+    );
     if (credit && debit) {
       if (_has(
         text,
@@ -365,7 +371,12 @@ class DefaultDirectionExtractor implements DirectionExtractor {
       return const ExtractedField(FinancialDirection.unknown, 0.2);
     }
     if (credit) return const ExtractedField(FinancialDirection.credit, 0.95);
-    if (debit) return const ExtractedField(FinancialDirection.debit, 0.95);
+    if (debit || cardMerchantPurchase) {
+      return ExtractedField(
+        FinancialDirection.debit,
+        debit ? 0.95 : 0.78,
+      );
+    }
     return const ExtractedField(FinancialDirection.unknown, 0);
   }
 }
@@ -471,6 +482,17 @@ class DefaultInstitutionExtractor implements InstitutionExtractor {
     'icici': 'icici',
     'axis': 'axis',
     'kotak': 'kotak',
+    'pnb': 'pnb',
+    'punjab national bank': 'pnb',
+    'bank of baroda': 'bob',
+    'canara bank': 'canara',
+    'union bank': 'union',
+    'idfc': 'idfc',
+    'paytm wallet': 'paytm_wallet',
+    // Notification-listener test sources can be the Android shell rather than
+    // the wallet package, so title/content remains the local identity signal.
+    'paytm': 'paytm_wallet',
+    'amazon pay': 'amazon_pay_wallet',
     'idfc': 'idfc',
     'indusind': 'indusind',
     'yes bank': 'yes',
@@ -501,7 +523,7 @@ class DefaultReferenceExtractor implements ReferenceExtractor {
   @override
   ExtractedField<String?> extract(NormalizedNotification input) {
     final match = RegExp(
-      r'\b(?:utr|rrn|ref(?:erence)?|txn id|upi ref)\s*[:#-]?\s*([a-z0-9]{6,30})\b',
+      r'\b(?:utr|rrn|ref(?:erence)?|txn(?:\s+id)?|transaction\s+id|upi ref)\s*[:#-]?\s*([a-z0-9/-]{6,30})\b',
       caseSensitive: false,
     ).firstMatch(input.originalText);
     return match == null

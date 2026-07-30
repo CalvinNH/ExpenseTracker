@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/financial_presentations.dart';
+import 'package:expense_tracker/core/models/review_transaction.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
@@ -18,7 +19,7 @@ class ActivityScreen extends StatefulWidget {
 class _ActivityScreenState extends State<ActivityScreen> {
   bool _isLoading = true;
   List<Transaction> _allTransactions = [];
-  List<TransactionStory> _stories = [];
+  List<ReviewTransaction> _reviewTransactions = [];
   Map<int, String> _accountIdToNameMap = {};
   StreamSubscription? _transactionSubscription;
 
@@ -47,14 +48,14 @@ class _ActivityScreenState extends State<ActivityScreen> {
       final db = AppDatabase.instance;
       final transactions = await db.getAllTransactions();
       final accounts = await db.getAllAccounts();
-      final stories = await db.getTransactionStories();
+      final reviews = await db.getTransactionsForReview();
 
       final accountMap = {for (final acc in accounts) acc.id!: acc.bankName};
 
       if (mounted) {
         setState(() {
           _allTransactions = transactions;
-          _stories = stories;
+          _reviewTransactions = reviews;
           _accountIdToNameMap = accountMap;
           _isLoading = false;
         });
@@ -79,6 +80,19 @@ class _ActivityScreenState extends State<ActivityScreen> {
     if (result == true && mounted) {
       _loadData();
     }
+  }
+
+  Future<void> _openReviewTransaction(ReviewTransaction review) async {
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => AddEditTransactionSheet(reviewTransaction: review),
+    );
+    if (result == true && mounted) _loadData();
   }
 
   String _getGroupHeader(DateTime dt) {
@@ -166,7 +180,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          '${_allTransactions.length + _stories.length} items',
+                          '${_allTransactions.length + _reviewTransactions.length} items',
                           style: const TextStyle(
                             color: AppTheme.primaryBlue,
                             fontSize: 12,
@@ -183,7 +197,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
-              else if (_allTransactions.isEmpty && _stories.isEmpty)
+              else if (_allTransactions.isEmpty && _reviewTransactions.isEmpty)
                 SliverFillRemaining(
                   child: Center(
                     child: Column(
@@ -213,13 +227,11 @@ class _ActivityScreenState extends State<ActivityScreen> {
                   ),
                 )
               else ...[
-                if (_stories.isNotEmpty)
+                if (_reviewTransactions.isNotEmpty)
                   SliverPadding(
                     padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
-                    sliver: SliverList.builder(
-                      itemCount: _stories.length,
-                      itemBuilder: (context, index) =>
-                          _buildTransactionStory(_stories[index]),
+                    sliver: SliverToBoxAdapter(
+                      child: _buildReviewSection(_reviewTransactions),
                     ),
                   ),
                 if (_allTransactions.isNotEmpty)
@@ -415,6 +427,125 @@ class _ActivityScreenState extends State<ActivityScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildReviewSection(List<ReviewTransaction> reviews) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const Key('transactions-for-review'),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: AppTheme.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.fact_check_outlined,
+                  color: AppTheme.primaryBlue,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Transactions for review',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textDark,
+                        ),
+                      ),
+                      const Text(
+                        'Confirm pre-filled details to include them in tracking.',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  '${reviews.length}',
+                  style: const TextStyle(
+                    color: AppTheme.primaryBlue,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: AppTheme.borderLight),
+          for (var index = 0; index < reviews.length; index++) ...[
+            _buildReviewTile(reviews[index]),
+            if (index != reviews.length - 1)
+              const Divider(
+                height: 1,
+                indent: 72,
+                color: AppTheme.borderLight,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReviewTile(ReviewTransaction review) {
+    final parsed = review.parsedEvent;
+    final isCredit = parsed.direction == FinancialDirection.credit;
+    final merchant =
+        parsed.merchantRaw ?? parsed.merchantNormalized ?? 'Review transaction';
+    final amount = parsed.amountMinor == null
+        ? 'Amount needs review'
+        : '${isCredit ? '+' : '-'} â‚¹${(parsed.amountMinor! / 100).toStringAsFixed(2)}';
+    final evidence = [
+      if (parsed.institutionId != null) parsed.institutionId!.toUpperCase(),
+      if (parsed.instrumentLastFour != null) '••${parsed.instrumentLastFour}',
+      _formatTime(review.suggestedOccurredAt),
+    ].join(' · ');
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      leading: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: AppTheme.primaryBlue.withOpacity(.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Icon(
+          Icons.edit_note_rounded,
+          color: AppTheme.primaryBlue,
+        ),
+      ),
+      title: Text(
+        merchant,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          fontWeight: FontWeight.bold,
+          color: AppTheme.textDark,
+        ),
+      ),
+      subtitle: Text(
+        evidence,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Text(
+        amount,
+        style: TextStyle(
+          fontWeight: FontWeight.w800,
+          color: isCredit ? AppTheme.successGreen : AppTheme.errorRed,
+        ),
+      ),
+      onTap: () => _openReviewTransaction(review),
     );
   }
 }

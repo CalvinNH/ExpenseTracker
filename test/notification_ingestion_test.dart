@@ -164,6 +164,66 @@ void main() {
     expect(parsed!.parseDecision, ParseDecision.retainOnly);
   });
 
+  test('a reviewed retained event moves into the resolved transaction ledger',
+      () async {
+    final accountId = await AppDatabase.instance.createAccount(
+      Account(
+        displayName: 'Review account',
+        accountType: AccountType.bankAccount,
+        openingBalanceMinor: 100000,
+      ),
+    );
+    final result = await NotificationIngestionProcessor().ingest(
+      envelope(
+        packageName: 'com.unknown.sender',
+        content: 'Paid INR 100.00 at Cafe.',
+      ),
+    );
+    expect(result.disposition, IngestionDisposition.retained);
+    final reviews = await AppDatabase.instance.getTransactionsForReview();
+    expect(reviews, hasLength(1));
+    expect(reviews.single.suggestedOccurredAt, postedAt);
+    expect(reviews.single.parsedEvent.amountMinor, 10000);
+
+    await AppDatabase.instance.resolveReviewedTransaction(
+      parsedFinancialEventId: reviews.single.parsedEvent.id!,
+      transaction: Transaction(
+        amount: 100,
+        type: TransactionType.debit,
+        timestamp: reviews.single.suggestedOccurredAt,
+        merchant: 'Cafe',
+        category: 'Food & Dining',
+        accountId: accountId,
+      ),
+    );
+
+    expect(await AppDatabase.instance.getTransactionsForReview(), isEmpty);
+    expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+    expect(await AppDatabase.instance.getParsedEventLedgerLinks(), hasLength(1));
+  });
+
+  test('shell-injected wallet notification with a transaction ID posts safely',
+      () async {
+    await AppDatabase.instance.createAccount(
+      Account(
+        displayName: 'Paytm Wallet',
+        institutionId: 'paytm_wallet',
+        accountType: AccountType.wallet,
+        openingBalanceMinor: 10000,
+      ),
+    );
+    final result = await NotificationIngestionProcessor().ingest(
+      envelope(
+        packageName: 'com.android.shell',
+        title: 'Paytm',
+        content: 'Paid Rs.160 to Tea Stall. Transaction ID: 2026072911',
+      ),
+    );
+
+    expect(result.disposition, IngestionDisposition.posted);
+    expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+  });
+
   test(
     'explicitly ignored package is rejected without raw persistence',
     () async {
@@ -419,6 +479,32 @@ void main() {
       hasLength(2),
     );
     expect(await AppDatabase.instance.getParsedEventGroupLinks(), hasLength(2));
+  });
+
+  test('a settled reversal posts the credit movement instead of being retained',
+      () async {
+    await createHdfcAccount();
+    final processor = NotificationIngestionProcessor();
+    await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        content:
+            'INR 700.00 debited from HDFC Bank A/c XX1234 at Cafe. Ref: TXN/290711',
+      ),
+    );
+    final reversal = await processor.ingest(
+      envelope(
+        packageName: 'com.android.shell',
+        notificationId: 40,
+        content:
+            'INR 700.00 transaction at Cafe was reversed on card XX1234. Ref: TXN/290711',
+      ),
+    );
+
+    expect(reversal.disposition, IngestionDisposition.posted);
+    final transactions = await AppDatabase.instance.getAllTransactions();
+    expect(transactions, hasLength(2));
+    expect(transactions.first.type, TransactionType.credit);
   });
 
   test(

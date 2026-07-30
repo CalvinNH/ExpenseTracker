@@ -13,6 +13,7 @@ import 'package:expense_tracker/core/models/transaction_group.dart';
 import 'package:expense_tracker/features/ingestion/notification_identity.dart';
 import 'package:expense_tracker/features/ingestion/notification_parser.dart';
 import 'package:expense_tracker/features/ingestion/notification_source_policy.dart';
+import 'package:expense_tracker/features/ingestion/structural_notification_fingerprint.dart';
 
 class NotificationEnvelope {
   const NotificationEnvelope({
@@ -137,6 +138,23 @@ class NotificationIngestionProcessor {
       sourcePackage: envelope.packageName,
       knownPackage: sourceClass != NotificationSourceClass.unknownPackage,
     );
+    final structuralTemplate = const NotificationStructuralFingerprinter()
+        .generate(parsed);
+    final templateRoleSignature = _templateRoleSignature(parsed);
+    final isCompletedValidatedParse =
+        parsed.decision == ParseDecision.autoPost &&
+        parsed.status == FinancialEventStatus.completed &&
+        parsed.selectedAmount != null &&
+        parsed.direction != FinancialDirection.unknown &&
+        parsed.direction != FinancialDirection.none;
+    final learnedTemplate = await _database.observeNotificationTemplate(
+      fingerprint: structuralTemplate.fingerprint,
+      sourcePackage: envelope.packageName,
+      fieldPositionMetadata: structuralTemplate.metadataJson,
+      roleSignature: templateRoleSignature,
+      successfulCompletedParse: isCompletedValidatedParse,
+      observedAt: envelope.ingestedAt,
+    );
     if (parsed.selectedAmount == null ||
         parsed.direction == FinancialDirection.unknown) {
       final parsedId = await _database.createParsedFinancialEvent(
@@ -242,6 +260,29 @@ class NotificationIngestionProcessor {
 
     var decision = parsed.decision;
     var failureCode = parsed.failureCode;
+    var effectiveConfidence = parsed.overallConfidence;
+    // A promoted template is only a bounded confirmation of an already valid,
+    // completed parse. It never changes field extraction or status semantics.
+    if (learnedTemplate.isPromoted &&
+        parsed.status == FinancialEventStatus.completed &&
+        parsed.selectedAmount != null &&
+        parsed.direction != FinancialDirection.unknown &&
+        parsed.direction != FinancialDirection.none) {
+      effectiveConfidence = (effectiveConfidence + .08)
+          .clamp(0.0, .99)
+          .toDouble();
+      final validation = DefaultParseValidator().validate(
+        relevance: parsed.relevance,
+        amount: parsed.selectedAmount,
+        direction: parsed.direction,
+        status: parsed.status,
+        overallConfidence: effectiveConfidence,
+      );
+      if (validation.decision == ParseDecision.autoPost) {
+        decision = ParseDecision.autoPost;
+        failureCode = null;
+      }
+    }
     final paymentRail = _inferPaymentRail(
       '${envelope.title ?? ''} ${envelope.content ?? ''}',
     );
@@ -257,7 +298,7 @@ class NotificationIngestionProcessor {
       disposition = IngestionDisposition.retained;
     } else if ((parsed.eventType == FinancialEventType.refund ||
             parsed.eventType == FinancialEventType.reversal) &&
-        parsed.status != FinancialEventStatus.completed) {
+        !_hasSettledFinancialEffect(parsed.eventType, parsed.status)) {
       decision = ParseDecision.retainOnly;
       failureCode = null;
       disposition = IngestionDisposition.retained;
@@ -331,7 +372,7 @@ class NotificationIngestionProcessor {
         referenceNumber: parsed.referenceNumber,
         paymentRail: paymentRail,
         transactionOccurredAt: parsed.transactionTime ?? postedAt,
-        overallConfidence: parsed.overallConfidence,
+        overallConfidence: effectiveConfidence,
         fieldConfidence: {
           ...parsed.fieldConfidence,
           'account': matchedAccount == null ? 0 : 0.9,
@@ -384,7 +425,7 @@ class NotificationIngestionProcessor {
       if (matchedAccount != null &&
           (parsed.eventType == FinancialEventType.refund ||
               parsed.eventType == FinancialEventType.reversal) &&
-          parsed.status != FinancialEventStatus.completed) {
+          !_hasSettledFinancialEffect(parsed.eventType, parsed.status)) {
         await _linkRelatedEvent(
           parsedFinancialEventId: parsedId,
           eventType: parsed.eventType,
@@ -455,14 +496,36 @@ class NotificationIngestionProcessor {
       caseSensitive: false,
     ).hasMatch(text);
     final hasAction = RegExp(
-      r'\b(debited|credited|spent|paid|received|withdrawn|deposited|refund|cashback|transferred)\b',
+      r'\b(debited|credited|spent|paid|received|withdrawn|deposited|refund|cashback|transferred|transaction\s+of)\b',
       caseSensitive: false,
     ).hasMatch(text);
     final hasInstrumentOrReference = RegExp(
-      r'\b(a/c|account|card|upi|vpa|ref(?:erence)?|utr|rrn|hdfc|sbi|icici|axis|kotak|bank)\b',
+      r'\b(a/c|account|card|upi|vpa|ref(?:erence)?|transaction id|txn id|utr|rrn|hdfc|sbi|icici|axis|kotak|bank)\b',
       caseSensitive: false,
     ).hasMatch(text);
     return hasAmount && hasAction && hasInstrumentOrReference;
+  }
+
+  bool _hasSettledFinancialEffect(
+    FinancialEventType eventType,
+    FinancialEventStatus status,
+  ) =>
+      status == FinancialEventStatus.completed ||
+      (eventType == FinancialEventType.reversal &&
+          status == FinancialEventStatus.reversed);
+
+  String _templateRoleSignature(FinancialParseResult parsed) {
+    final roles = parsed.amountCandidates
+        .map((candidate) => candidate.semanticRole.name)
+        .toSet()
+        .toList()
+      ..sort();
+    return [
+      parsed.direction.name,
+      parsed.status.name,
+      parsed.eventType.name,
+      ...roles,
+    ].join('|');
   }
 
   String? _inferPaymentRail(String text) {
@@ -534,7 +597,7 @@ class NotificationIngestionProcessor {
     int groupId;
     if (assessment.matchedId != null && !assessment.ambiguous) {
       groupId = assessment.matchedId!;
-      if (status == FinancialEventStatus.completed) {
+      if (_hasSettledFinancialEffect(eventType, status)) {
         final group = await _database.getTransactionGroup(groupId);
         if (group != null &&
             eventType == FinancialEventType.refund &&

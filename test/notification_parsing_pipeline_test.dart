@@ -144,5 +144,39 @@ void main() {
         ParseDecision.provisional,
       );
     });
+
+    test('handles the retained emulator notification variants', () {
+      final pipeline = NotificationParsingPipeline();
+      final cardPurchase = pipeline.parse(
+        'iMobile',
+        'Transaction of Rs 3100.00 on ICICI Bank Card XX9012 at Apple Store on 29-JUL-26',
+        knownPackage: true,
+      );
+      final pnb = pipeline.parse(
+        'PNB',
+        'INR 810.00 debited from PNB A/c XX1122 at Petrol Pump. Ref: PNB11',
+        knownPackage: true,
+      );
+      final wallet = pipeline.parse(
+        'Paytm',
+        'Paid Rs.160 to Tea Stall. Transaction ID: 2026072911',
+        knownPackage: true,
+      );
+      final reversal = pipeline.parse(
+        'HDFC',
+        'INR 700.00 transaction at Reliance Fresh was reversed on card XX1234. Ref: TXN/290711',
+        knownPackage: true,
+      );
+
+      expect(cardPurchase.direction, FinancialDirection.debit);
+      expect(cardPurchase.decision, ParseDecision.autoPost);
+      expect(pnb.institutionId, 'pnb');
+      expect(pnb.decision, ParseDecision.autoPost);
+      expect(wallet.direction, FinancialDirection.debit);
+      expect(wallet.referenceNumber, '2026072911');
+      expect(reversal.eventType, FinancialEventType.reversal);
+      expect(reversal.status, FinancialEventStatus.reversed);
+      expect(reversal.decision, ParseDecision.autoPost);
+    });
   });
 }

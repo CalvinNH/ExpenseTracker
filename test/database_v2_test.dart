@@ -51,6 +51,7 @@ void main() {
     expect(tableNames, contains(AppDatabase.tableLedgerEntries));
     expect(tableNames, contains(AppDatabase.tableParsedEventLedgerLinks));
     expect(tableNames, contains(AppDatabase.tableParsedEventGroupLinks));
+    expect(tableNames, contains(AppDatabase.tableNotificationTemplates));
 
     final rawColumns = await db.rawQuery(
       'PRAGMA table_info(${AppDatabase.tableRawNotificationEvents})',
@@ -98,6 +99,7 @@ void main() {
     expect(indexNames, contains('idx_raw_exact_duplicate'));
     expect(indexNames, contains('idx_event_ledger_link'));
     expect(indexNames, contains('idx_event_group_link'));
+    expect(indexNames, contains('idx_notification_templates_package'));
   });
 
   test('version 1 upgrade preserves account and transaction data', () async {
