@@ -3,7 +3,6 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
@@ -13,8 +12,8 @@ import 'package:expense_tracker/core/database/app_database.dart';
 /// Manages the SQLCipher database encryption key using the Android Keystore.
 ///
 /// Key material is generated once using [Random.secure], Base64URL-encoded for
-/// safe transit across platform channels, and persisted in
-/// [EncryptedSharedPreferences] (backed by the Android Keystore HSM).
+/// safe transit across platform channels, and persisted with RSA-OAEP key
+/// wrapping and AES-GCM authenticated encryption backed by Android Keystore.
 ///
 /// This class enforces:
 /// - No hardcoded passphrases — all key material is runtime-generated.
@@ -29,37 +28,71 @@ class SecurityKeyManager {
 
   static const _keyAlias = 'db_encryption_key';
   static const _androidOptions = AndroidOptions(
-    encryptedSharedPreferences: true,
+    resetOnError: false,
+    migrateOnAlgorithmChange: true,
+    migrateWithBackup: true,
+    storageNamespace: 'expense_tracker_database_secrets',
   );
+  static const _legacyEncryptedOptions = AndroidOptions(
+    // Required only to recover keys written by pre-v10 app releases.
+    // ignore: deprecated_member_use
+    encryptedSharedPreferences: true,
+    resetOnError: false,
+    migrateOnAlgorithmChange: false,
+  );
+  static const _legacyDefaultOptions = AndroidOptions(resetOnError: false);
 
   final FlutterSecureStorage _encryptedStorage = const FlutterSecureStorage(
     aOptions: _androidOptions,
   );
 
-  final FlutterSecureStorage _legacyStorage = const FlutterSecureStorage();
+  final FlutterSecureStorage _legacyStorage = const FlutterSecureStorage(
+    aOptions: _legacyDefaultOptions,
+  );
+  final FlutterSecureStorage _legacyEncryptedStorage =
+      const FlutterSecureStorage(aOptions: _legacyEncryptedOptions);
 
   /// Reads the encryption key from EncryptedSharedPreferences first,
   /// falling back to legacy SharedPreferences for existing app installs.
   Future<String?> _readKeyWithFallback() async {
-    // 1. Try reading from EncryptedSharedPreferences
+    // New isolated namespace using RSA-OAEP key wrapping and AES-GCM.
     try {
       final key = await _encryptedStorage.read(key: _keyAlias);
-      if (key != null && key.isNotEmpty) return key;
+      if (_isValidKey(key)) return key;
     } catch (_) {}
 
-    // 2. Fallback to Legacy SharedPreferences (for users updating from prior builds)
-    try {
-      final legacyKey = await _legacyStorage.read(key: _keyAlias);
-      if (legacyKey != null && legacyKey.isNotEmpty) {
-        // Automatically migrate legacy key to EncryptedSharedPreferences
-        try {
+    // Read older storage configurations without allowing either implementation
+    // to reset/delete data on cryptographic errors.
+    for (final legacy in [_legacyEncryptedStorage, _legacyStorage]) {
+      try {
+        final legacyKey = await legacy.read(key: _keyAlias);
+        if (_isValidKey(legacyKey)) {
+          // Persist first, verify the new copy, then continue using it.
           await _encryptedStorage.write(key: _keyAlias, value: legacyKey);
-        } catch (_) {}
-        return legacyKey;
+          final verified = await _encryptedStorage.read(key: _keyAlias);
+          if (verified != legacyKey) {
+            throw StateError('Secure key migration verification failed.');
+          }
+          return legacyKey;
+        }
+      } catch (_) {
+        // Try the next legacy configuration.
       }
-    } catch (_) {}
+    }
 
     return null;
+  }
+
+  bool _isValidKey(String? value) {
+    return value != null && RegExp(r'^[A-Za-z0-9_-]{43}=?$').hasMatch(value);
+  }
+
+  Future<void> _persistAndVerify(String key) async {
+    await _encryptedStorage.write(key: _keyAlias, value: key);
+    final stored = await _encryptedStorage.read(key: _keyAlias);
+    if (stored != key) {
+      throw StateError('Database key could not be persisted securely.');
+    }
   }
 
   /// Returns the database encryption passphrase.
@@ -97,10 +130,7 @@ class SecurityKeyManager {
     // KEY PRESERVATION GUARD:
     // If the database file ALREADY EXISTS on disk, generating a new key is forbidden
     // as it would permanently break decryption of existing user data.
-    final isTest =
-        WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
-        Platform.environment.containsKey('FLUTTER_TEST');
-    if (dbFileExists && !isTest) {
+    if (dbFileExists) {
       throw StateError(
         'Database file exists but encryption key could not be retrieved from secure storage.',
       );
@@ -108,7 +138,7 @@ class SecurityKeyManager {
 
     // Only generate a new key on fresh installs (no database file exists yet)
     final newKey = _generateSecureKey();
-    await _encryptedStorage.write(key: _keyAlias, value: newKey);
+    await _persistAndVerify(newKey);
     return newKey;
   }
 
@@ -126,6 +156,6 @@ class SecurityKeyManager {
     for (var i = 0; i < 32; i++) {
       bytes[i] = random.nextInt(256);
     }
-    return base64Url.encode(bytes);
+    return base64Url.encode(bytes).replaceAll('=', '');
   }
 }

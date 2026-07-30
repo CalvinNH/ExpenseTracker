@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:expense_tracker/core/database/database_migrator.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/event_matching.dart';
+import 'package:expense_tracker/core/models/financial_presentations.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/ledger_entry.dart';
 import 'package:expense_tracker/core/models/money.dart';
@@ -23,7 +24,7 @@ class AppDatabase {
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 6;
+  static const databaseVersion = 7;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -38,21 +39,32 @@ class AppDatabase {
   Database? _database;
   Future<Database>? _databaseFuture;
   String? _passphrase;
+  int _generation = 0;
 
   Future<Database> get database async {
-    final existing = _database;
-    if (existing != null && existing.isOpen) {
-      return existing;
-    }
+    while (true) {
+      final existing = _database;
+      if (existing != null && existing.isOpen) {
+        return existing;
+      }
 
-    try {
-      _databaseFuture ??= _initDatabase();
-      _database = await _databaseFuture;
-      return _database!;
-    } catch (e) {
-      _databaseFuture = null;
-      _database = null;
-      rethrow;
+      try {
+        final generation = _generation;
+        _databaseFuture ??= _initDatabase();
+        _database = await _databaseFuture;
+        if (generation != _generation) {
+          final superseded = _database;
+          _database = null;
+          _databaseFuture = null;
+          if (superseded?.isOpen ?? false) await superseded!.close();
+          continue;
+        }
+        return _database!;
+      } catch (e) {
+        _databaseFuture = null;
+        _database = null;
+        rethrow;
+      }
     }
   }
 
@@ -99,18 +111,59 @@ class AppDatabase {
     _passphrase = await SecurityKeyManager.instance.getOrCreateDatabaseKey();
 
     // Handle migration from plaintext → encrypted for existing users
-    await DatabaseMigrator.instance.migrateIfNeeded(path, _passphrase!);
+    await DatabaseMigrator.instance.prepare(path, _passphrase!);
 
-    return openDatabase(
-      path,
-      password: _passphrase,
-      version: databaseVersion,
-      onConfigure: (db) async {
-        await db.execute('PRAGMA foreign_keys = ON');
-      },
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await openDatabase(
+          path,
+          password: _passphrase,
+          version: databaseVersion,
+          singleInstance: true,
+          onConfigure: _configureConnection,
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+          onOpen: _validateOpenedDatabase,
+        );
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 150 * (attempt + 1)),
+          );
+        }
+      }
+    }
+    throw StateError(
+      'Encrypted database could not be opened after retry: '
+      '${lastError.runtimeType}',
     );
+  }
+
+  Future<void> _configureConnection(Database db) async {
+    await db.rawQuery('PRAGMA foreign_keys = ON');
+    await db.rawQuery('PRAGMA busy_timeout = 5000');
+    await db.rawQuery('PRAGMA secure_delete = ON');
+    await db.rawQuery('PRAGMA synchronous = FULL');
+    await db.rawQuery('PRAGMA journal_mode = WAL');
+  }
+
+  Future<void> _validateOpenedDatabase(Database db) async {
+    await db.rawQuery('SELECT count(*) FROM sqlite_master');
+    final foreignKeys = await db.rawQuery('PRAGMA foreign_keys');
+    if (foreignKeys.isEmpty || foreignKeys.first.values.first != 1) {
+      throw StateError('Foreign-key enforcement is not enabled.');
+    }
+    final check = await db.rawQuery('PRAGMA quick_check(1)');
+    if (check.isEmpty ||
+        check.first.values.first.toString().toLowerCase() != 'ok') {
+      throw StateError('Database integrity validation failed.');
+    }
+    final cipherCheck = await db.rawQuery('PRAGMA cipher_integrity_check');
+    if (cipherCheck.isNotEmpty) {
+      throw StateError('Encrypted page integrity validation failed.');
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -169,6 +222,8 @@ class AppDatabase {
           await _upgradeFrom4To5(db);
         case 5:
           await _upgradeFrom5To6(db);
+        case 6:
+          await _upgradeFrom6To7(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -228,6 +283,27 @@ class AppDatabase {
     }
 
     await _createDomainTablesAndIndexes(db);
+  }
+
+  Future<void> _upgradeFrom6To7(Database db) async {
+    if (!await _tableExists(db, tableAccounts)) return;
+    final rows = await db.query(
+      tableAccounts,
+      columns: ['id', 'display_name', 'last_four'],
+    );
+    for (final row in rows) {
+      final currentName = row['display_name'] as String;
+      final suffix =
+          row['last_four'] as String? ??
+          Account.extractSafeTrailingFour(currentName);
+      final compact = Account.formatDisplayName(currentName, suffix);
+      await db.update(
+        tableAccounts,
+        {'display_name': compact, if (suffix != null) 'last_four': suffix},
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+    }
   }
 
   Future<void> _upgradeFrom2To3(Database db) async {
@@ -560,19 +636,36 @@ class AppDatabase {
   }
 
   Future<void> close() async {
-    final db = _database;
+    _generation++;
+    final pending = _databaseFuture;
+    Database? db = _database;
+    if (db == null && pending != null) {
+      try {
+        db = await pending;
+      } catch (_) {
+        // A failed open has no handle to close.
+      }
+    }
     if (db != null && db.isOpen) {
       await db.close();
     }
     _database = null;
     _databaseFuture = null;
+    _passphrase = null;
   }
 
   // --- Accounts CRUD ---
 
   Future<int> createAccount(Account account) async {
     final db = await database;
-    return db.insert(tableAccounts, account.toMap());
+    final suffix =
+        account.lastFour ??
+        Account.extractSafeTrailingFour(account.displayName);
+    final normalized = account.copyWith(
+      displayName: Account.formatDisplayName(account.displayName, suffix),
+      lastFour: suffix,
+    );
+    return db.insert(tableAccounts, normalized.toMap());
   }
 
   Future<Account?> getAccount(int id) async {
@@ -761,6 +854,225 @@ class AppDatabase {
     );
 
     return rows.map(Transaction.fromMap).toList();
+  }
+
+  /// Lifecycle-aware totals for presentation. The date range is applied to
+  /// posted ledger movements, so a refund in a later month reduces that
+  /// month's net expense without rewriting the purchase month.
+  Future<FinancialSummary> getFinancialSummary({
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final db = await database;
+    final clauses = <String>[];
+    final args = <Object?>[];
+    if (start != null) {
+      clauses.add('l.occurred_at >= ?');
+      args.add(start.toIso8601String());
+    }
+    if (end != null) {
+      clauses.add('l.occurred_at < ?');
+      args.add(end.toIso8601String());
+    }
+    final where = clauses.isEmpty ? '' : 'WHERE ${clauses.join(' AND ')}';
+    final rows = await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(CASE WHEN l.direction = 'debit'
+          AND l.event_role = 'primary'
+          AND (g.group_type IS NULL OR g.group_type NOT IN ('transfer','reversal'))
+          THEN l.amount_minor ELSE 0 END), 0) gross_expenses,
+        COALESCE(SUM(CASE WHEN l.event_role = 'refund'
+          AND l.direction = 'credit' THEN l.amount_minor ELSE 0 END), 0) refunds,
+        COALESCE(SUM(CASE WHEN l.direction = 'credit'
+          AND l.event_role = 'primary'
+          AND (g.group_type IS NULL OR g.group_type NOT IN
+            ('transfer','cashbackRelated','reversal','purchaseRefund','partialRefund'))
+          THEN l.amount_minor ELSE 0 END), 0) income,
+        COALESCE(SUM(CASE WHEN g.group_type = 'cashbackRelated'
+          AND l.direction = 'credit' THEN l.amount_minor ELSE 0 END), 0) cashback,
+        COALESCE(SUM(CASE WHEN l.event_role = 'fee'
+          AND l.direction = 'debit' THEN l.amount_minor ELSE 0 END), 0) fees,
+        COALESCE(SUM(CASE WHEN g.group_type = 'transfer'
+          AND l.direction = 'debit' THEN l.amount_minor ELSE 0 END), 0) transfers
+      FROM $tableLedgerEntries l
+      LEFT JOIN $tableTransactionGroups g ON g.id = l.transaction_group_id
+      $where
+    ''', args);
+    final row = rows.single;
+
+    // Manual transactions created by older/current UI have no ledger row.
+    final manualClauses = <String>[
+      'NOT EXISTS (SELECT 1 FROM $tableLedgerEntries l2 '
+          'WHERE l2.legacy_transaction_id = t.id)',
+    ];
+    final manualArgs = <Object?>[];
+    if (start != null) {
+      manualClauses.add('t.timestamp >= ?');
+      manualArgs.add(start.toIso8601String());
+    }
+    if (end != null) {
+      manualClauses.add('t.timestamp < ?');
+      manualArgs.add(end.toIso8601String());
+    }
+    final manual = (await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'debit' THEN CAST(ROUND(amount * 100) AS INTEGER) ELSE 0 END), 0) expenses,
+        COALESCE(SUM(CASE WHEN type = 'credit' THEN CAST(ROUND(amount * 100) AS INTEGER) ELSE 0 END), 0) income
+      FROM $tableTransactions t
+      WHERE ${manualClauses.join(' AND ')}
+    ''', manualArgs)).single;
+    final balances = (await db.rawQuery(
+      'SELECT COALESCE(SUM(CAST(ROUND(current_balance * 100) AS INTEGER)), 0) total FROM $tableAccounts',
+    )).single;
+    final gross = (row['gross_expenses'] as int) + (manual['expenses'] as int);
+    final refunds = row['refunds'] as int;
+    return FinancialSummary(
+      grossExpensesMinor: gross,
+      completedRefundsMinor: refunds,
+      netExpensesMinor: gross - refunds,
+      incomeMinor: (row['income'] as int) + (manual['income'] as int),
+      cashbackMinor: row['cashback'] as int,
+      feesMinor: row['fees'] as int,
+      transfersMinor: row['transfers'] as int,
+      accountBalancesMinor: balances['total'] as int,
+    );
+  }
+
+  Future<List<CategoryFinancialSummary>> getCategoryFinancialSummaries({
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final db = await database;
+    final clauses = <String>[];
+    final args = <Object?>[];
+    if (start != null) {
+      clauses.add('l.occurred_at >= ?');
+      args.add(start.toIso8601String());
+    }
+    if (end != null) {
+      clauses.add('l.occurred_at < ?');
+      args.add(end.toIso8601String());
+    }
+    final dateWhere = clauses.isEmpty ? '' : 'AND ${clauses.join(' AND ')}';
+    final rows = await db.rawQuery('''
+      SELECT COALESCE(l.category, g.category, 'Other') category,
+        SUM(CASE WHEN l.direction = 'debit' AND l.event_role = 'primary'
+          AND (g.group_type IS NULL OR g.group_type NOT IN ('transfer','reversal'))
+          THEN l.amount_minor ELSE 0 END) gross,
+        SUM(CASE WHEN l.direction = 'credit' AND l.event_role = 'refund'
+          THEN l.amount_minor ELSE 0 END) refunds
+      FROM $tableLedgerEntries l
+      LEFT JOIN $tableTransactionGroups g ON g.id = l.transaction_group_id
+      WHERE 1=1 $dateWhere
+      GROUP BY COALESCE(l.category, g.category, 'Other')
+    ''', args);
+    final result = <String, CategoryFinancialSummary>{
+      for (final row in rows)
+        row['category'] as String: CategoryFinancialSummary(
+          category: row['category'] as String,
+          grossSpendMinor: row['gross'] as int,
+          refundsMinor: row['refunds'] as int,
+        ),
+    };
+    final manualClauses = <String>[
+      "t.type = 'debit'",
+      'NOT EXISTS (SELECT 1 FROM $tableLedgerEntries l2 WHERE l2.legacy_transaction_id = t.id)',
+    ];
+    final manualArgs = <Object?>[];
+    if (start != null) {
+      manualClauses.add('t.timestamp >= ?');
+      manualArgs.add(start.toIso8601String());
+    }
+    if (end != null) {
+      manualClauses.add('t.timestamp < ?');
+      manualArgs.add(end.toIso8601String());
+    }
+    final manualRows = await db.rawQuery('''
+      SELECT category, SUM(CAST(ROUND(amount * 100) AS INTEGER)) gross
+      FROM $tableTransactions t WHERE ${manualClauses.join(' AND ')}
+      GROUP BY category
+    ''', manualArgs);
+    for (final row in manualRows) {
+      final category = row['category'] as String;
+      final old = result[category];
+      result[category] = CategoryFinancialSummary(
+        category: category,
+        grossSpendMinor: (old?.grossSpendMinor ?? 0) + (row['gross'] as int),
+        refundsMinor: old?.refundsMinor ?? 0,
+      );
+    }
+    final values = result.values
+        .where((e) => e.grossSpendMinor != 0 || e.refundsMinor != 0)
+        .toList();
+    values.sort((a, b) => b.netSpendMinor.compareTo(a.netSpendMinor));
+    return values;
+  }
+
+  Future<List<AccountLedgerMovement>> getAccountLedgerMovements({
+    int? accountId,
+  }) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT l.*, a.display_name account_name, g.group_type
+      FROM $tableLedgerEntries l
+      JOIN $tableAccounts a ON a.id = l.account_id
+      LEFT JOIN $tableTransactionGroups g ON g.id = l.transaction_group_id
+      ${accountId == null ? '' : 'WHERE l.account_id = ?'}
+      ORDER BY l.occurred_at DESC, l.id DESC
+    ''',
+      [?accountId],
+    );
+    return rows
+        .map(
+          (row) => AccountLedgerMovement(
+            entry: LedgerEntry.fromMap(row),
+            accountName: row['account_name'] as String,
+            groupType: row['group_type'] == null
+                ? null
+                : TransactionGroupType.fromStorage(row['group_type'] as String),
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<TransactionStory>> getTransactionStories() async {
+    final db = await database;
+    final groupRows = await db.query(
+      tableTransactionGroups,
+      orderBy: 'updated_at DESC, id DESC',
+    );
+    final stories = <TransactionStory>[];
+    for (final row in groupRows) {
+      final group = TransactionGroup.fromMap(row);
+      final movements = (await getAccountLedgerMovements())
+          .where((movement) => movement.entry.transactionGroupId == group.id)
+          .toList();
+      final eventRows = await db.rawQuery(
+        '''
+        SELECT p.* FROM $tableParsedFinancialEvents p
+        JOIN $tableParsedEventGroupLinks link
+          ON link.parsed_financial_event_id = p.id
+        WHERE link.transaction_group_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM $tableParsedEventLedgerLinks ledger_link
+            WHERE ledger_link.parsed_financial_event_id = p.id
+          )
+        ORDER BY p.transaction_occurred_at ASC, p.id ASC
+      ''',
+        [group.id],
+      );
+      stories.add(
+        TransactionStory(
+          group: group,
+          movements: movements,
+          informationalEvents: eventRows
+              .map(ParsedFinancialEvent.fromMap)
+              .toList(),
+        ),
+      );
+    }
+    return stories;
   }
 
   Future<int> updateTransaction(Transaction transaction) async {

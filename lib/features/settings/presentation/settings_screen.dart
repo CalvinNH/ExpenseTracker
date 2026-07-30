@@ -241,40 +241,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: AppTheme.cardShadow,
                 ),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.all(16),
-                  leading: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: AppTheme.primaryBlue.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(16),
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.all(16),
+                    leading: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryBlue.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(
+                        Icons.file_download_rounded,
+                        color: AppTheme.primaryBlue,
+                      ),
                     ),
-                    child: const Icon(
-                      Icons.file_download_rounded,
-                      color: AppTheme.primaryBlue,
+                    title: const Text(
+                      'Export to CSV',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textDark,
+                        fontSize: 16,
+                      ),
                     ),
-                  ),
-                  title: const Text(
-                    'Export to CSV',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textDark,
-                      fontSize: 16,
+                    subtitle: const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Choose a folder and save your transaction data',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
                     ),
-                  ),
-                  subtitle: const Padding(
-                    padding: EdgeInsets.only(top: 4),
-                    child: Text(
-                      'Choose a folder and save your transaction data',
-                      style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                    trailing: const Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppTheme.textMuted,
                     ),
+                    onTap: _exportToCsv,
                   ),
-                  trailing: const Icon(
-                    Icons.chevron_right_rounded,
-                    color: AppTheme.textMuted,
-                  ),
-                  onTap: _exportToCsv,
                 ),
               ),
               const SizedBox(height: 28),
@@ -295,47 +303,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: AppTheme.cardShadow,
                 ),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.all(16),
-                  leading: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: AppTheme.coralAccent.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.account_balance_wallet_rounded,
-                      color: AppTheme.coralAccent,
-                    ),
-                  ),
-                  title: const Text(
-                    'Add Account',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textDark,
-                      fontSize: 16,
-                    ),
-                  ),
-                  subtitle: const Padding(
-                    padding: EdgeInsets.only(top: 4),
-                    child: Text(
-                      'Set up another cash, bank, or card account',
-                      style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
-                    ),
-                  ),
-                  trailing: const Icon(
-                    Icons.chevron_right_rounded,
-                    color: AppTheme.textMuted,
-                  ),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute<void>(
-                        builder: (_) => const AccountsScreen(),
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.all(16),
+                    leading: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: AppTheme.coralAccent.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(16),
                       ),
-                    );
-                  },
+                      child: const Icon(
+                        Icons.account_balance_wallet_rounded,
+                        color: AppTheme.coralAccent,
+                      ),
+                    ),
+                    title: const Text(
+                      'Add Account',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textDark,
+                        fontSize: 16,
+                      ),
+                    ),
+                    subtitle: const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Set up another cash, bank, or card account',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppTheme.textMuted,
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute<void>(
+                          builder: (_) => const AccountsScreen(),
+                        ),
+                      );
+                    },
+                  ),
                 ),
               ),
               const SizedBox(height: 28),
@@ -356,102 +372,107 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: AppTheme.cardShadow,
                 ),
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      secondary: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: AppTheme.primaryBlue.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const Icon(
-                          Icons.notifications_active_rounded,
-                          color: AppTheme.primaryBlue,
-                        ),
-                      ),
-                      title: const Text(
-                        'Daily Manual Entry Reminder',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textDark,
-                          fontSize: 15,
-                        ),
-                      ),
-                      subtitle: const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: Text(
-                          'Reminds you to add missed transactions daily',
-                          style: TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                      value: _isReminderEnabled,
-                      onChanged: (val) async {
-                        setState(() => _isReminderEnabled = val);
-                        await ReminderNotificationService.instance
-                            .setReminderEnabled(val);
-                        if (mounted) {
-                          AppToast.show(
-                            context,
-                            val
-                                ? 'Daily reminder enabled'
-                                : 'Daily reminder disabled',
-                          );
-                        }
-                      },
-                    ),
-                    if (_isReminderEnabled) ...[
-                      const Divider(height: 1, indent: 16, endIndent: 16),
-                      ListTile(
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      SwitchListTile(
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 8,
                         ),
-                        leading: Container(
+                        secondary: Container(
                           width: 44,
                           height: 44,
                           decoration: BoxDecoration(
-                            color: AppTheme.successGreen.withOpacity(0.12),
+                            color: AppTheme.primaryBlue.withOpacity(0.12),
                             borderRadius: BorderRadius.circular(14),
                           ),
                           child: const Icon(
-                            Icons.access_time_rounded,
-                            color: AppTheme.successGreen,
+                            Icons.notifications_active_rounded,
+                            color: AppTheme.primaryBlue,
                           ),
                         ),
                         title: const Text(
-                          'Reminder Time',
+                          'Daily Manual Entry Reminder',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: AppTheme.textDark,
                             fontSize: 15,
                           ),
                         ),
-                        subtitle: Text(
-                          _formatReminderTime(_reminderTime),
-                          style: const TextStyle(
-                            color: AppTheme.primaryBlue,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
+                        subtitle: const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Reminds you to add missed transactions daily',
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
-                        trailing: const Icon(
-                          Icons.edit_outlined,
-                          color: AppTheme.textMuted,
-                          size: 20,
-                        ),
-                        onTap: _selectReminderTime,
+                        value: _isReminderEnabled,
+                        onChanged: (val) async {
+                          setState(() => _isReminderEnabled = val);
+                          await ReminderNotificationService.instance
+                              .setReminderEnabled(val);
+                          if (mounted) {
+                            AppToast.show(
+                              context,
+                              val
+                                  ? 'Daily reminder enabled'
+                                  : 'Daily reminder disabled',
+                            );
+                          }
+                        },
                       ),
+                      if (_isReminderEnabled) ...[
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                        ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          leading: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: AppTheme.successGreen.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(
+                              Icons.access_time_rounded,
+                              color: AppTheme.successGreen,
+                            ),
+                          ),
+                          title: const Text(
+                            'Reminder Time',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.textDark,
+                              fontSize: 15,
+                            ),
+                          ),
+                          subtitle: Text(
+                            _formatReminderTime(_reminderTime),
+                            style: const TextStyle(
+                              color: AppTheme.primaryBlue,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.edit_outlined,
+                            color: AppTheme.textMuted,
+                            size: 20,
+                          ),
+                          onTap: _selectReminderTime,
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
               const SizedBox(height: 28),
@@ -472,226 +493,231 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: AppTheme.cardShadow,
                 ),
-                child: Column(
-                  children: [
-                    // Listener Connection Status Badge
-                    ListTile(
-                      contentPadding: const EdgeInsets.all(16),
-                      leading: Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: (_isListenerConnected == true)
-                              ? AppTheme.successGreen.withOpacity(0.12)
-                              : AppTheme.errorRed.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Icon(
-                          (_isListenerConnected == true)
-                              ? Icons.check_circle_rounded
-                              : Icons.warning_amber_rounded,
-                          color: (_isListenerConnected == true)
-                              ? AppTheme.successGreen
-                              : AppTheme.errorRed,
-                        ),
-                      ),
-                      title: Text(
-                        (_isListenerConnected == true)
-                            ? 'Listener Status: Active'
-                            : 'Listener Status: Disconnected',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: (_isListenerConnected == true)
-                              ? AppTheme.textDark
-                              : AppTheme.errorRed,
-                          fontSize: 16,
-                        ),
-                      ),
-                      subtitle: Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          (_isListenerConnected == true)
-                              ? 'Android OS is actively forwarding notifications'
-                              : 'Permission granted, but Android OS unbound the listener. Tap Reconnect.',
-                          style: const TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      // Listener Connection Status Badge
+                      ListTile(
+                        contentPadding: const EdgeInsets.all(16),
+                        leading: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: (_isListenerConnected == true)
+                                ? AppTheme.successGreen.withOpacity(0.12)
+                                : AppTheme.errorRed.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Icon(
+                            (_isListenerConnected == true)
+                                ? Icons.check_circle_rounded
+                                : Icons.warning_amber_rounded,
+                            color: (_isListenerConnected == true)
+                                ? AppTheme.successGreen
+                                : AppTheme.errorRed,
                           ),
                         ),
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(
-                          Icons.refresh_rounded,
-                          color: AppTheme.primaryBlue,
+                        title: Text(
+                          (_isListenerConnected == true)
+                              ? 'Listener Status: Active'
+                              : 'Listener Status: Disconnected',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: (_isListenerConnected == true)
+                                ? AppTheme.textDark
+                                : AppTheme.errorRed,
+                            fontSize: 16,
+                          ),
                         ),
-                        onPressed: _checkListenerStatus,
-                        tooltip: 'Check Status',
-                      ),
-                    ),
-                    const Divider(height: 1, indent: 16, endIndent: 16),
-                    ListTile(
-                      contentPadding: const EdgeInsets.all(16),
-                      leading: Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: AppTheme.primaryBlue.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(16),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            (_isListenerConnected == true)
+                                ? 'Android OS is actively forwarding notifications'
+                                : 'Permission granted, but Android OS unbound the listener. Tap Reconnect.',
+                            style: const TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
+                          ),
                         ),
-                        child: _isReconnecting
-                            ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
+                        trailing: IconButton(
+                          icon: const Icon(
+                            Icons.refresh_rounded,
+                            color: AppTheme.primaryBlue,
+                          ),
+                          onPressed: _checkListenerStatus,
+                          tooltip: 'Check Status',
+                        ),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        contentPadding: const EdgeInsets.all(16),
+                        leading: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryBlue.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: _isReconnecting
+                              ? const Padding(
+                                  padding: EdgeInsets.all(12),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.sync_rounded,
+                                  color: AppTheme.primaryBlue,
                                 ),
-                              )
-                            : const Icon(
-                                Icons.sync_rounded,
-                                color: AppTheme.primaryBlue,
-                              ),
-                      ),
-                      title: const Text(
-                        'Reconnect Notification Listener',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textDark,
-                          fontSize: 16,
                         ),
-                      ),
-                      subtitle: const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: Text(
-                          'Force Android OS to re-bind the background listener service',
+                        title: const Text(
+                          'Reconnect Notification Listener',
                           style: TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textDark,
+                            fontSize: 16,
                           ),
                         ),
-                      ),
-                      trailing: const Icon(
-                        Icons.chevron_right_rounded,
-                        color: AppTheme.textMuted,
-                      ),
-                      onTap: _isReconnecting ? null : _reconnectListener,
-                    ),
-                    const Divider(height: 1, indent: 16, endIndent: 16),
-                    ListTile(
-                      contentPadding: const EdgeInsets.all(16),
-                      leading: Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: AppTheme.coralAccent.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: const Icon(
-                          Icons.settings_suggest_rounded,
-                          color: AppTheme.coralAccent,
-                        ),
-                      ),
-                      title: const Text(
-                        'Open Notification Access Settings',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textDark,
-                          fontSize: 16,
-                        ),
-                      ),
-                      subtitle: const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: Text(
-                          'Toggle Expense Tracker OFF & ON in Android settings if system unbinds listener',
-                          style: TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
+                        subtitle: const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Force Android OS to re-bind the background listener service',
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
-                      ),
-                      trailing: const Icon(
-                        Icons.open_in_new_rounded,
-                        color: AppTheme.textMuted,
-                      ),
-                      onTap: _openNotificationSettings,
-                    ),
-                    const Divider(height: 1, indent: 16, endIndent: 16),
-                    ListTile(
-                      contentPadding: const EdgeInsets.all(16),
-                      leading: Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: AppTheme.warningAmber.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(16),
+                        trailing: const Icon(
+                          Icons.chevron_right_rounded,
+                          color: AppTheme.textMuted,
                         ),
-                        child: const Icon(
-                          Icons.bug_report_rounded,
-                          color: AppTheme.warningAmber,
-                        ),
+                        onTap: _isReconnecting ? null : _reconnectListener,
                       ),
-                      title: const Text(
-                        'Export Notification Logs',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textDark,
-                          fontSize: 16,
-                        ),
-                      ),
-                      subtitle: const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: Text(
-                          'Share raw logs of all notification events for debugging',
-                          style: TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        contentPadding: const EdgeInsets.all(16),
+                        leading: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: AppTheme.coralAccent.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(
+                            Icons.settings_suggest_rounded,
+                            color: AppTheme.coralAccent,
                           ),
                         ),
-                      ),
-                      trailing: const Icon(
-                        Icons.share_rounded,
-                        color: AppTheme.textMuted,
-                      ),
-                      onTap: _exportNotificationLogs,
-                    ),
-                    const Divider(height: 1, indent: 16, endIndent: 16),
-                    ListTile(
-                      contentPadding: const EdgeInsets.all(16),
-                      leading: Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: AppTheme.errorRed.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: const Icon(
-                          Icons.delete_sweep_rounded,
-                          color: AppTheme.errorRed,
-                        ),
-                      ),
-                      title: const Text(
-                        'Clear Notification Logs',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textDark,
-                          fontSize: 16,
-                        ),
-                      ),
-                      subtitle: const Padding(
-                        padding: EdgeInsets.only(top: 4),
-                        child: Text(
-                          'Delete all stored diagnostic log entries',
+                        title: const Text(
+                          'Open Notification Access Settings',
                           style: TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textDark,
+                            fontSize: 16,
                           ),
                         ),
+                        subtitle: const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Toggle Expense Tracker OFF & ON in Android settings if system unbinds listener',
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        trailing: const Icon(
+                          Icons.open_in_new_rounded,
+                          color: AppTheme.textMuted,
+                        ),
+                        onTap: _openNotificationSettings,
                       ),
-                      trailing: const Icon(
-                        Icons.chevron_right_rounded,
-                        color: AppTheme.textMuted,
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        contentPadding: const EdgeInsets.all(16),
+                        leading: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: AppTheme.warningAmber.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(
+                            Icons.bug_report_rounded,
+                            color: AppTheme.warningAmber,
+                          ),
+                        ),
+                        title: const Text(
+                          'Export Notification Logs',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textDark,
+                            fontSize: 16,
+                          ),
+                        ),
+                        subtitle: const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Share raw logs of all notification events for debugging',
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        trailing: const Icon(
+                          Icons.share_rounded,
+                          color: AppTheme.textMuted,
+                        ),
+                        onTap: _exportNotificationLogs,
                       ),
-                      onTap: _clearNotificationLogs,
-                    ),
-                  ],
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        contentPadding: const EdgeInsets.all(16),
+                        leading: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: AppTheme.errorRed.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(
+                            Icons.delete_sweep_rounded,
+                            color: AppTheme.errorRed,
+                          ),
+                        ),
+                        title: const Text(
+                          'Clear Notification Logs',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textDark,
+                            fontSize: 16,
+                          ),
+                        ),
+                        subtitle: const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Delete all stored diagnostic log entries',
+                            style: TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        trailing: const Icon(
+                          Icons.chevron_right_rounded,
+                          color: AppTheme.textMuted,
+                        ),
+                        onTap: _clearNotificationLogs,
+                      ),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 48),

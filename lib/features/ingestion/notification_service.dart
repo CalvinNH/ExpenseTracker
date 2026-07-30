@@ -14,6 +14,7 @@ class NotificationService {
   static bool _isInitializing = false;
   static NotificationIngestionProcessor _processor =
       NotificationIngestionProcessor();
+  static Future<void> _ingestionTail = Future<void>.value();
 
   static const MethodChannel _methodeChannel = MethodChannel(
     'x-slayer/notifications_channel',
@@ -186,7 +187,7 @@ class NotificationService {
       try {
         _subscription = NotificationListenerService.notificationsStream.listen(
           (event) async {
-            await _processNotification(event, source: 'live');
+            await _enqueueNotification(event, source: 'live');
           },
           onError: (e, stackTrace) {
             _nlog.logError(
@@ -202,7 +203,7 @@ class NotificationService {
           'Draining ${queuedNotifications.length} queued notifications.',
         );
         for (final event in queuedNotifications) {
-          await _processNotification(event, source: 'native-queue');
+          await _enqueueNotification(event, source: 'native-queue');
         }
 
         // The package's EventChannel only works while this Flutter process is
@@ -215,7 +216,7 @@ class NotificationService {
           'Inspecting ${activeNotifications.length} active notifications.',
         );
         for (final event in activeNotifications) {
-          await _processNotification(event, source: 'active-recovery');
+          await _enqueueNotification(event, source: 'active-recovery');
         }
 
         _isInitialized = true;
@@ -317,6 +318,25 @@ class NotificationService {
         '$source notification failed: $e\n$stackTrace',
       );
     }
+  }
+
+  /// Serializes notification writes. Stream callbacks can overlap, while
+  /// deduplication and lifecycle matching must observe a stable committed
+  /// database state before processing the next event.
+  static Future<void> _enqueueNotification(
+    ServiceNotificationEvent event, {
+    required String source,
+  }) {
+    final completion = Completer<void>();
+    _ingestionTail = _ingestionTail.then((_) async {
+      try {
+        await _processNotification(event, source: source);
+        completion.complete();
+      } catch (error, stackTrace) {
+        completion.completeError(error, stackTrace);
+      }
+    });
+    return completion.future;
   }
 
   static void dispose() {

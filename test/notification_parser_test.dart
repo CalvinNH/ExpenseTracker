@@ -32,7 +32,7 @@ void main() {
       expect(parsed.type, TransactionType.debit);
       expect(parsed.merchant, 'Zomato');
       expect(parsed.category, 'Food & Dining');
-      expect(parsed.bankName, 'SBI');
+      expect(parsed.bankName, 'State Bank of India');
     });
 
     test('Credit test with INR and info prefix', () {

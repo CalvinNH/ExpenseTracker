@@ -77,9 +77,11 @@ void main() {
       // Verify Title
       expect(find.text('Analytics'), findsOneWidget);
 
-      // Verify Total Spent (1200 + 4500 = 5700)
-      expect(find.text('TOTAL SPENT'), findsOneWidget);
+      // Verify lifecycle-aware net spend (1200 + 4500 = 5700)
+      expect(find.text('NET SPENT'), findsOneWidget);
       expect(find.text('₹ 5700.00'), findsOneWidget);
+      expect(find.textContaining('Gross ₹5700.00'), findsOneWidget);
+      expect(find.textContaining('Refunds ₹0.00'), findsOneWidget);
 
       // Verify Tab Switcher is present
       expect(find.text('Categories'), findsOneWidget);

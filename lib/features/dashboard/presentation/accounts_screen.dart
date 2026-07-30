@@ -59,31 +59,25 @@ class _AccountsScreenState extends State<AccountsScreen> {
     }
   }
 
-  String _getAccountIconPath(String bankName) {
-    final lower = bankName.toLowerCase();
-    if (lower.contains('cash')) {
+  String _getAccountIconPath(Account account) {
+    if (account.accountType == AccountType.cash) {
       return 'assets/icon/account_cash.png';
-    } else if (lower.contains('card') ||
-        lower.contains('cc') ||
-        lower.contains('credit')) {
+    } else if (account.accountType == AccountType.creditCard ||
+        account.accountType == AccountType.debitCard) {
       return 'assets/icon/account_card.png';
     } else {
       return 'assets/icon/account_bank.png';
     }
   }
 
-  String _getAccountTypeLabel(String bankName) {
-    final lower = bankName.toLowerCase();
-    if (lower.contains('cash')) {
-      return 'Cash Wallet';
-    } else if (lower.contains('card') ||
-        lower.contains('cc') ||
-        lower.contains('credit')) {
-      return 'Credit Card';
-    } else {
-      return 'Bank Account';
-    }
-  }
+  String _getAccountTypeLabel(Account account) => switch (account.accountType) {
+    AccountType.creditCard => 'Credit Card',
+    AccountType.debitCard => 'Debit Card',
+    AccountType.wallet => 'Wallet',
+    AccountType.cash => 'Cash Wallet',
+    AccountType.bankAccount => 'Bank Account',
+    AccountType.unknown => 'Account',
+  };
 
   Future<void> _showAddAccountDialog() async {
     _nameController.clear();
@@ -313,7 +307,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                                   !lower.contains('credit')) {
                                 name = '$name Credit Card';
                               }
-                              if (ending.isNotEmpty) name = '$name ($ending)';
+                              name = Account.formatDisplayName(name, ending);
                             } else if (_selectedType == 'Cash') {
                               final lower = name.toLowerCase();
                               if (!lower.contains('cash') &&
@@ -497,9 +491,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           itemBuilder: (context, index) {
                             final acc = _accounts[index];
                             final isCard =
-                                acc.bankName.toLowerCase().contains('card') ||
-                                acc.bankName.toLowerCase().contains('cc') ||
-                                acc.bankName.toLowerCase().contains('credit');
+                                acc.accountType == AccountType.creditCard ||
+                                acc.accountType == AccountType.debitCard;
 
                             return Container(
                               margin: const EdgeInsets.only(bottom: 16),
@@ -508,43 +501,48 @@ class _AccountsScreenState extends State<AccountsScreen> {
                                 borderRadius: BorderRadius.circular(20),
                                 boxShadow: AppTheme.cardShadow,
                               ),
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.all(16),
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Image.asset(
-                                    _getAccountIconPath(acc.bankName),
-                                    width: 44,
-                                    height: 44,
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                                title: Text(
-                                  acc.bankName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: AppTheme.textDark,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                subtitle: Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Text(
-                                    _getAccountTypeLabel(acc.bankName),
-                                    style: const TextStyle(
-                                      color: AppTheme.textMuted,
-                                      fontSize: 12,
+                              child: Material(
+                                color: Colors.transparent,
+                                borderRadius: BorderRadius.circular(20),
+                                clipBehavior: Clip.antiAlias,
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.all(16),
+                                  leading: ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.asset(
+                                      _getAccountIconPath(acc),
+                                      width: 44,
+                                      height: 44,
+                                      fit: BoxFit.cover,
                                     ),
                                   ),
-                                ),
-                                trailing: Text(
-                                  '₹ ${acc.currentBalance.toStringAsFixed(2)}',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: isCard && acc.currentBalance < 0
-                                        ? AppTheme.errorRed
-                                        : AppTheme.textDark,
-                                    fontSize: 16,
+                                  title: Text(
+                                    acc.bankName,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: AppTheme.textDark,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  subtitle: Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      _getAccountTypeLabel(acc),
+                                      style: const TextStyle(
+                                        color: AppTheme.textMuted,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                  trailing: Text(
+                                    '₹ ${acc.currentBalance.toStringAsFixed(2)}',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: isCard && acc.currentBalance < 0
+                                          ? AppTheme.errorRed
+                                          : AppTheme.textDark,
+                                      fontSize: 16,
+                                    ),
                                   ),
                                 ),
                               ),

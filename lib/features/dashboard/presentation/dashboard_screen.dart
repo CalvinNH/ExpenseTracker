@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:expense_tracker/core/database/app_database.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
+import 'package:expense_tracker/core/models/financial_presentations.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/features/dashboard/presentation/accounts_screen.dart';
@@ -21,6 +23,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Transaction> _allTransactions = [];
   List<Transaction> _recentTransactions = [];
   Map<String, double> _categoryExpenses = {};
+  FinancialSummary _summary = const FinancialSummary();
   Map<int, String> _accountIdToNameMap = {};
   List<FlSpot> _sparklineSpots = [];
 
@@ -69,27 +72,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final currentMonthStart = DateTime(now.year, now.month, 1);
       final nextMonthStart = DateTime(now.year, now.month + 1, 1);
 
-      final currentMonthExpenses = allTransactions.where((txn) {
-        return txn.type == TransactionType.debit &&
-            txn.timestamp.isAfter(
-              currentMonthStart.subtract(const Duration(microseconds: 1)),
-            ) &&
-            txn.timestamp.isBefore(nextMonthStart);
-      }).toList();
-
-      // Category expenses
-      final Map<String, double> categoryMap = {};
-      for (final txn in currentMonthExpenses) {
-        categoryMap[txn.category] =
-            (categoryMap[txn.category] ?? 0.0) + txn.amount;
-      }
+      final summary = await db.getFinancialSummary(
+        start: currentMonthStart,
+        end: nextMonthStart,
+      );
+      final categories = await db.getCategoryFinancialSummaries(
+        start: currentMonthStart,
+        end: nextMonthStart,
+      );
+      final categoryMap = {
+        for (final category in categories)
+          category.category: category.netSpendMinor / 100,
+      };
 
       // Generate sparkline spots (cumulative spend or daily spend)
       // Let's do cumulative spend as it forms a beautiful curve
       final Map<int, double> dailySpends = {};
-      for (final txn in currentMonthExpenses) {
-        final day = txn.timestamp.day;
-        dailySpends[day] = (dailySpends[day] ?? 0.0) + txn.amount;
+      final movements = await db.getAccountLedgerMovements();
+      for (final movement in movements) {
+        final entry = movement.entry;
+        if (entry.occurredAt.isBefore(currentMonthStart) ||
+            !entry.occurredAt.isBefore(nextMonthStart)) {
+          continue;
+        }
+        final amount = entry.amountMinor / 100;
+        final delta = entry.eventRole == LedgerEventRole.refund
+            ? -amount
+            : entry.direction == FinancialDirection.debit &&
+                  entry.eventRole == LedgerEventRole.primary &&
+                  movement.groupType != TransactionGroupType.transfer &&
+                  movement.groupType != TransactionGroupType.reversal
+            ? amount
+            : 0.0;
+        if (delta != 0) {
+          dailySpends[entry.occurredAt.day] =
+              (dailySpends[entry.occurredAt.day] ?? 0) + delta;
+        }
       }
 
       final List<FlSpot> spots = [];
@@ -111,6 +129,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _allTransactions = allTransactions;
           _recentTransactions = recent;
           _categoryExpenses = categoryMap;
+          _summary = summary;
           _accountIdToNameMap = accountMap;
           _sparklineSpots = spots;
           _isLoading = false;
@@ -170,10 +189,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final totalExpenses = _categoryExpenses.values.fold<double>(
-      0.0,
-      (sum, val) => sum + val,
-    );
+    final totalExpenses = _summary.netExpensesMinor / 100;
 
     return Scaffold(
       body: SafeArea(
@@ -339,15 +355,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'TOTAL BALANCE',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.2,
+              Expanded(
+                child: Text(
+                  'TOTAL BALANCE',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.7),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                  ),
                 ),
               ),
+              const SizedBox(width: 8),
               GestureDetector(
                 onTap: () async {
                   await Navigator.push(
@@ -425,14 +445,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'This month',
-              style: TextStyle(
-                color: AppTheme.textDark,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+            const Expanded(
+              child: Text(
+                'This month',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: AppTheme.textDark,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
+            const SizedBox(width: 8),
             GestureDetector(
               onTap: () {
                 // Let the Shell controller know or do nothing as it's tabbed
@@ -475,7 +499,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Spent in $currentMonthName',
+                          'Net spent in $currentMonthName',
                           style: const TextStyle(
                             color: AppTheme.textMuted,
                             fontSize: 12,
@@ -566,6 +590,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   }).toList(),
                 ),
               ],
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  Text(
+                    'Gross ₹${(_summary.grossExpensesMinor / 100).toStringAsFixed(0)}',
+                    key: const Key('dashboard-gross-expenses'),
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                  Text(
+                    'Refunds ₹${(_summary.completedRefundsMinor / 100).toStringAsFixed(0)}',
+                    key: const Key('dashboard-completed-refunds'),
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                  Text(
+                    'Income ₹${(_summary.incomeMinor / 100).toStringAsFixed(0)}',
+                    key: const Key('dashboard-income'),
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                  Text(
+                    'Transfers ₹${(_summary.transfersMinor / 100).toStringAsFixed(0)}',
+                    key: const Key('dashboard-transfers'),
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                  Text(
+                    'Cashback ₹${(_summary.cashbackMinor / 100).toStringAsFixed(0)}',
+                    key: const Key('dashboard-cashback'),
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                  Text(
+                    'Fees ₹${(_summary.feesMinor / 100).toStringAsFixed(0)}',
+                    key: const Key('dashboard-fees'),
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -662,7 +723,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         size: 20,
                       ),
                     ),
-                    title: Row(
+                    title:
+                    Row(
                       children: [
                         Expanded(
                           child: Text(

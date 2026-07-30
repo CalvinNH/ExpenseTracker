@@ -150,7 +150,7 @@ void main() {
 
     final account = await AppDatabase.instance.getAccount(7);
     expect(account, isNotNull);
-    expect(account!.displayName, 'HDFC Credit Card XX4321');
+    expect(account!.displayName, 'HDFC Credit Card - 4321');
     expect(account.bankName, account.displayName);
     expect(account.accountType, AccountType.creditCard);
     expect(account.lastFour, '4321');

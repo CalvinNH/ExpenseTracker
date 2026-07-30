@@ -1,5 +1,7 @@
 import 'package:collection/collection.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
+import 'package:expense_tracker/core/services/manual_transaction_service.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
@@ -322,8 +324,8 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                       final acc = _accounts[index];
                       final isSelected = acc.id == _selectedAccountId;
                       final isCard =
-                          acc.bankName.toLowerCase().contains('card') ||
-                          acc.bankName.toLowerCase().contains('cc');
+                          acc.accountType == AccountType.creditCard ||
+                          acc.accountType == AccountType.debitCard;
 
                       return ListTile(
                         leading: Container(
@@ -386,7 +388,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
     try {
       final amount = double.parse(_amountController.text.trim());
       final merchant = _merchantController.text.trim();
-      final db = AppDatabase.instance;
+      final manualTransactions = ManualTransactionService();
 
       if (_isEditing) {
         final updated = widget.existingTransaction!.copyWith(
@@ -397,7 +399,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
           accountId: _selectedAccountId,
           timestamp: _selectedDateTime,
         );
-        await db.updateTransaction(updated);
+        await manualTransactions.update(updated);
       } else {
         final newTxn = Transaction(
           amount: amount,
@@ -407,7 +409,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
           category: _selectedCategory,
           accountId: _selectedAccountId!,
         );
-        await db.createTransaction(newTxn);
+        await manualTransactions.create(newTxn);
       }
 
       NotificationService.notifyTransactionIngested();
@@ -455,9 +457,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
 
     setState(() => _isSaving = true);
     try {
-      await AppDatabase.instance.deleteTransaction(
-        widget.existingTransaction!.id!,
-      );
+      await ManualTransactionService().delete(widget.existingTransaction!.id!);
       NotificationService.notifyTransactionIngested();
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
@@ -491,6 +491,74 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
         ? dt.hour - 12
         : (dt.hour == 0 ? 12 : dt.hour);
     return '$day ${months[dt.month - 1]} $year · ${formatHour.toString().padLeft(2, '0')}:$minute $period';
+  }
+
+  Widget _buildSelectorTile({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+    Key? key,
+  }) {
+    return GestureDetector(
+      key: key,
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: AppTheme.cardShadow,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: color, size: 16),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: AppTheme.textMuted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppTheme.textDark,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: AppTheme.textMuted,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -540,14 +608,18 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    _isEditing ? 'Edit transaction' : 'Add transaction',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textDark,
+                  Expanded(
+                    child: Text(
+                      _isEditing ? 'Edit transaction' : 'Add transaction',
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textDark,
+                      ),
                     ),
                   ),
+                  const SizedBox(width: 8),
                   Row(
                     children: [
                       if (_isEditing)
@@ -597,7 +669,6 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                       ),
                     ),
                     child: const Row(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
                           Icons.content_paste_go_rounded,
@@ -605,12 +676,15 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                           color: AppTheme.primaryBlue,
                         ),
                         SizedBox(width: 8),
-                        Text(
-                          'Paste & Auto-Fill from SMS',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: AppTheme.primaryBlue,
+                        Expanded(
+                          child: Text(
+                            'Paste & Auto-Fill from SMS',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.primaryBlue,
+                            ),
                           ),
                         ),
                       ],
@@ -654,14 +728,19 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                                   size: 16,
                                 ),
                               const SizedBox(width: 4),
-                              Text(
-                                'Expense',
-                                style: TextStyle(
-                                  color: _selectedType == TransactionType.debit
-                                      ? Colors.white
-                                      : AppTheme.textMuted,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                              Flexible(
+                                child: Text(
+                                  'Expense',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color:
+                                        _selectedType == TransactionType.debit
+                                        ? Colors.white
+                                        : AppTheme.textMuted,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
                                 ),
                               ),
                             ],
@@ -692,14 +771,19 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                                   size: 16,
                                 ),
                               const SizedBox(width: 4),
-                              Text(
-                                'Income',
-                                style: TextStyle(
-                                  color: _selectedType == TransactionType.credit
-                                      ? Colors.white
-                                      : AppTheme.textMuted,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                              Flexible(
+                                child: Text(
+                                  'Income',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color:
+                                        _selectedType == TransactionType.credit
+                                        ? Colors.white
+                                        : AppTheme.textMuted,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
                                 ),
                               ),
                             ],
@@ -777,37 +861,41 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   horizontal: 16,
                   vertical: 8,
                 ),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _merchantController,
-                        style: const TextStyle(
-                          color: AppTheme.textDark,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          hintText: 'Starbucks, Rent, Salary',
-                          hintStyle: TextStyle(
-                            color: Color(0xFFD1D5DB),
-                            fontWeight: FontWeight.normal,
-                          ),
-                        ),
-                        textCapitalization: TextCapitalization.words,
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Enter description';
-                          }
-                          return null;
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
                     const Text(
                       'Merchant or Description',
-                      style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                      style: TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    TextFormField(
+                      controller: _merchantController,
+                      style: const TextStyle(
+                        color: AppTheme.textDark,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: EdgeInsets.only(top: 6, bottom: 4),
+                        hintText: 'Starbucks, Rent, Salary',
+                        hintStyle: TextStyle(
+                          color: Color(0xFFD1D5DB),
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                      textCapitalization: TextCapitalization.words,
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Enter description';
+                        }
+                        return null;
+                      },
                     ),
                   ],
                 ),
@@ -815,202 +903,37 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
               const SizedBox(height: 16),
 
               // Category Selector
-              GestureDetector(
+              _buildSelectorTile(
+                key: const Key('transaction-category-selector'),
+                label: 'Category',
+                value: _selectedCategory,
+                icon: AppTheme.getCategoryIcon(_selectedCategory),
+                color: AppTheme.getCategoryColor(_selectedCategory),
                 onTap: _showCategoryPicker,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: AppTheme.cardShadow,
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 16,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 32,
-                            height: 32,
-                            decoration: BoxDecoration(
-                              color: AppTheme.getCategoryColor(
-                                _selectedCategory,
-                              ).withOpacity(0.12),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              AppTheme.getCategoryIcon(_selectedCategory),
-                              color: AppTheme.getCategoryColor(
-                                _selectedCategory,
-                              ),
-                              size: 16,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            _selectedCategory,
-                            style: const TextStyle(
-                              color: AppTheme.textDark,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Row(
-                        children: [
-                          Text(
-                            'Category',
-                            style: TextStyle(
-                              color: AppTheme.textMuted,
-                              fontSize: 12,
-                            ),
-                          ),
-                          SizedBox(width: 4),
-                          Icon(
-                            Icons.keyboard_arrow_down_rounded,
-                            color: AppTheme.textMuted,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
               ),
               const SizedBox(height: 16),
 
               // Account Selector
               _isLoadingAccounts
                   ? const Center(child: CircularProgressIndicator())
-                  : GestureDetector(
+                  : _buildSelectorTile(
+                      key: const Key('transaction-account-selector'),
+                      label: 'Account',
+                      value: selectedAccName,
+                      icon: Icons.account_balance_wallet_rounded,
+                      color: AppTheme.primaryBlue,
                       onTap: _showAccountPicker,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: AppTheme.cardShadow,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 16,
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Row(
-                              children: [
-                                Container(
-                                  width: 32,
-                                  height: 32,
-                                  decoration: BoxDecoration(
-                                    color: AppTheme.primaryBlue.withOpacity(
-                                      0.12,
-                                    ),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.account_balance_wallet_rounded,
-                                    color: AppTheme.primaryBlue,
-                                    size: 16,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Text(
-                                  selectedAccName,
-                                  style: const TextStyle(
-                                    color: AppTheme.textDark,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const Row(
-                              children: [
-                                Text(
-                                  'Account',
-                                  style: TextStyle(
-                                    color: AppTheme.textMuted,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                                SizedBox(width: 4),
-                                Icon(
-                                  Icons.keyboard_arrow_down_rounded,
-                                  color: AppTheme.textMuted,
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
                     ),
               const SizedBox(height: 16),
 
               // Date Selector
-              GestureDetector(
+              _buildSelectorTile(
+                key: const Key('transaction-date-selector'),
+                label: 'Date and Time',
+                value: _formatSelectedDate(_selectedDateTime),
+                icon: Icons.calendar_today_rounded,
+                color: AppTheme.primaryBlue,
                 onTap: _selectDateTime,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: AppTheme.cardShadow,
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 16,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 32,
-                            height: 32,
-                            decoration: BoxDecoration(
-                              color: AppTheme.primaryBlue.withOpacity(0.12),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(
-                              Icons.calendar_today_rounded,
-                              color: AppTheme.primaryBlue,
-                              size: 16,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            _formatSelectedDate(_selectedDateTime),
-                            style: const TextStyle(
-                              color: AppTheme.textDark,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Row(
-                        children: [
-                          Text(
-                            'Date and Time',
-                            style: TextStyle(
-                              color: AppTheme.textMuted,
-                              fontSize: 12,
-                            ),
-                          ),
-                          SizedBox(width: 4),
-                          Icon(
-                            Icons.keyboard_arrow_down_rounded,
-                            color: AppTheme.textMuted,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
               ),
               const SizedBox(height: 32),
 

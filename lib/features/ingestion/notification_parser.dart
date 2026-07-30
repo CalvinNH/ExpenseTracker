@@ -150,9 +150,9 @@ class NotificationParser {
   static String _displayInstitution(String? code) => switch (code) {
     'hdfc' => 'HDFC Bank',
     'axis' => 'Axis Bank',
-    'sbi' => 'SBI',
-    'icici' => 'ICICI',
-    'kotak' => 'KOTAK',
+    'sbi' => 'State Bank of India',
+    'icici' => 'ICICI Bank',
+    'kotak' => 'Kotak Mahindra Bank',
     null => 'Unknown Bank',
     _ => code.toUpperCase(),
   };

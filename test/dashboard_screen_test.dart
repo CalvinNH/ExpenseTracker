@@ -1,6 +1,8 @@
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
+import 'package:expense_tracker/core/services/financial_lifecycle_service.dart';
 import 'package:expense_tracker/features/dashboard/presentation/dashboard_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -135,4 +137,39 @@ void main() {
       expect(find.text('Uber Ride'), findsOneWidget);
     },
   );
+
+  testWidgets('Dashboard shows gross, refunds and net separately',
+      (WidgetTester tester) async {
+    final accountId = await AppDatabase.instance.createAccount(
+      Account(bankName: 'SBI', currentBalance: 5000),
+    );
+    final lifecycle = FinancialLifecycleService();
+    final group = await lifecycle.recordPurchase(
+      accountId: accountId,
+      amountMinor: 100000,
+      occurredAt: DateTime.now(),
+      category: 'Shopping',
+      merchant: 'Amazon',
+    );
+    await lifecycle.recordRefund(
+      originalGroupId: group,
+      destinationAccountId: accountId,
+      amountMinor: 40000,
+      occurredAt: DateTime.now(),
+      status: FinancialEventStatus.completed,
+      linkConfidence: .99,
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: DashboardScreen()));
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 200)),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('dashboard-gross-expenses')), findsOneWidget);
+    expect(find.text('Gross ₹1000'), findsOneWidget);
+    expect(find.text('Refunds ₹400'), findsOneWidget);
+    expect(find.text('₹ 600.00'), findsOneWidget);
+  });
 }

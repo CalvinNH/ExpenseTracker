@@ -223,7 +223,7 @@ class NotificationIngestionProcessor {
             ? record.canonicalName
             : suffix == null
             ? record.canonicalName
-            : '${record.canonicalName} account ending $suffix';
+            : Account.formatDisplayName(record.canonicalName, suffix);
         final newId = await _database.createAccount(
           Account(
             displayName: displayName,

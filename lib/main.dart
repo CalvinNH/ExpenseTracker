@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:expense_tracker/app_shell.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/security/app_lock_gate.dart';
@@ -9,7 +11,6 @@ import 'package:flutter/material.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  NotificationService.initialize(forceRequest: false);
   ReminderNotificationService.instance.initialize();
   runApp(const ExpenseTrackerApp());
 }
@@ -49,6 +50,9 @@ class _AppEntryState extends State<_AppEntry> {
 
   Future<Widget> _resolveInitialScreen() async {
     final accounts = await AppDatabase.instance.getAllAccounts();
+    // Do not let notification ingestion race encryption migration or schema
+    // validation during cold start.
+    unawaited(NotificationService.initialize(forceRequest: false));
     if (accounts.isNotEmpty) {
       return const AppShell();
     }
@@ -88,10 +92,12 @@ class _AppEntryState extends State<_AppEntry> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      '${snapshot.error}',
+                    const Text(
+                      'Your encrypted data has been preserved. Retry after '
+                      'unlocking the device. If the problem continues, do not '
+                      'clear app storage or reinstall the app.',
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: AppTheme.textMuted),
+                      style: TextStyle(color: AppTheme.textMuted),
                     ),
                     const SizedBox(height: 24),
                     ElevatedButton(

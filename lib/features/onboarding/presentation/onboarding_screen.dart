@@ -97,7 +97,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               !lower.contains('credit')) {
             name = '$name Credit Card';
           }
-          name = '$name ($ending)';
+          name = Account.formatDisplayName(name, ending);
         } else if (entry.selectedType == 'Cash') {
           final lower = name.toLowerCase();
           if (!lower.contains('cash') && !lower.contains('wallet')) {
@@ -296,47 +296,52 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   horizontal: 16,
                   vertical: 8,
                 ),
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: AppTheme.primaryBlue.withOpacity(0.12),
-                      shape: BoxShape.circle,
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(24),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryBlue.withOpacity(0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        _isNotificationPermissionGranted
+                            ? Icons.notifications_active_rounded
+                            : Icons.notifications_none_rounded,
+                        color: AppTheme.primaryBlue,
+                        size: 20,
+                      ),
                     ),
-                    child: Icon(
-                      _isNotificationPermissionGranted
-                          ? Icons.notifications_active_rounded
-                          : Icons.notifications_none_rounded,
-                      color: AppTheme.primaryBlue,
-                      size: 20,
-                    ),
-                  ),
-                  title: const Text(
-                    'Enable Auto-Tracking',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textDark,
-                      fontSize: 14,
-                    ),
-                  ),
-                  subtitle: const Text(
-                    'Required to read bank SMS/Notifications',
-                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
-                  ),
-                  trailing: TextButton(
-                    onPressed: _requestNotificationPermission,
-                    style: TextButton.styleFrom(
-                      foregroundColor: _isNotificationPermissionGranted
-                          ? AppTheme.successGreen
-                          : AppTheme.primaryBlue,
-                    ),
-                    child: Text(
-                      _isNotificationPermissionGranted ? 'ENABLED' : 'GRANT',
-                      style: const TextStyle(
+                    title: const Text(
+                      'Enable Auto-Tracking',
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 12,
+                        color: AppTheme.textDark,
+                        fontSize: 14,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      'Required to read bank SMS/Notifications',
+                      style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                    ),
+                    trailing: TextButton(
+                      onPressed: _requestNotificationPermission,
+                      style: TextButton.styleFrom(
+                        foregroundColor: _isNotificationPermissionGranted
+                            ? AppTheme.successGreen
+                            : AppTheme.primaryBlue,
+                      ),
+                      child: Text(
+                        _isNotificationPermissionGranted ? 'ENABLED' : 'GRANT',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
                       ),
                     ),
                   ),

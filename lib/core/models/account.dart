@@ -45,6 +45,30 @@ class Account {
   /// Compatibility alias for screens and ingestion matching.
   String get bankName => displayName;
 
+  /// Compact, stable account label. A suffix identifies an instrument but does
+  /// not imply that it is a credit card.
+  static String formatDisplayName(String name, String? lastFour) {
+    var base = name.trim().replaceAll(RegExp(r'\s+'), ' ');
+    base = base.replaceFirst(
+      RegExp(r'\bKotakk\s+Mahindra\s+Bank\b', caseSensitive: false),
+      'Kotak Mahindra Bank',
+    );
+    final suffix = lastFour != null && RegExp(r'^\d{4}$').hasMatch(lastFour)
+        ? lastFour
+        : extractSafeTrailingFour(base);
+    if (suffix == null) return base;
+    base = base
+        .replaceFirst(
+          RegExp(r'\s+account\s+ending\s+\d{4}\s*$', caseSensitive: false),
+          '',
+        )
+        .replaceFirst(RegExp(r'\s*\(\s*\d{4}\s*\)\s*$'), '')
+        .replaceFirst(RegExp(r'\s+-\s+\d{4}\s*$'), '')
+        .replaceFirst(RegExp(r'\s+[*xX.]+\d{4}\s*$'), '')
+        .trim();
+    return '$base - $suffix';
+  }
+
   Account copyWith({
     int? id,
     String? displayName,

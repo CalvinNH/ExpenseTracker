@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:expense_tracker/core/database/app_database.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
+import 'package:expense_tracker/core/models/financial_presentations.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
@@ -16,6 +18,7 @@ class AnalyticsScreen extends StatefulWidget {
 class _AnalyticsScreenState extends State<AnalyticsScreen> {
   bool _isLoading = true;
   List<Transaction> _transactions = [];
+  List<AccountLedgerMovement> _ledgerMovements = [];
   Map<int, String> _accountIdToNameMap = {};
   Map<int, String> _accountIdToTypeMap =
       {}; // Maps ID to Wallet/Card type based on name normalization
@@ -54,18 +57,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       final db = AppDatabase.instance;
       final transactions = await db.getAllTransactions();
       final accounts = await db.getAllAccounts();
+      final ledgerMovements = await db.getAccountLedgerMovements();
 
       final accountMap = <int, String>{};
       final accountTypeMap = <int, String>{};
 
       for (final acc in accounts) {
         accountMap[acc.id!] = acc.bankName;
-        accountTypeMap[acc.id!] = _normalizeAccountType(acc.bankName);
+        accountTypeMap[acc.id!] = _accountTypeLabel(acc.accountType);
       }
 
       if (mounted) {
         setState(() {
           _transactions = transactions;
+          _ledgerMovements = ledgerMovements;
           _accountIdToNameMap = accountMap;
           _accountIdToTypeMap = accountTypeMap;
           _isLoading = false;
@@ -78,35 +83,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     }
   }
 
-  String _normalizeAccountType(String bankName) {
-    final lower = bankName.toLowerCase().trim();
-    if (lower == 'cash' || lower.contains('cash')) {
-      return 'Cash Wallet';
-    }
-
-    final cardKeywords = [
-      'credit card',
-      'cc',
-      'card',
-      'credit',
-      'visa',
-      'mastercard',
-      'amex',
-      'rupay',
-      'diners',
-      'discover',
-      'platina',
-      'signature',
-      'infinite',
-      'onecard',
-    ];
-
-    if (cardKeywords.any((keyword) => lower.contains(keyword))) {
-      return 'Credit Card';
-    } else {
-      return 'Bank Account';
-    }
-  }
+  String _accountTypeLabel(AccountType type) => switch (type) {
+    AccountType.creditCard => 'Credit Card',
+    AccountType.debitCard => 'Debit Card',
+    AccountType.wallet => 'Wallet',
+    AccountType.cash => 'Cash Wallet',
+    AccountType.bankAccount => 'Bank Account',
+    AccountType.unknown => 'Account',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -142,33 +126,56 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       labelLastPeriod = 'vs last month';
     }
 
-    final currentMonthExpenses = _transactions.where((txn) {
-      return txn.type == TransactionType.debit &&
-          txn.timestamp.isAfter(
-            filterStartDate.subtract(const Duration(microseconds: 1)),
-          ) &&
-          txn.timestamp.isBefore(now.add(const Duration(days: 1)));
-    }).toList();
-
-    final totalSpentThisMonth = currentMonthExpenses.fold<double>(
-      0.0,
-      (sum, txn) => sum + txn.amount,
+    bool inRange(DateTime value, DateTime start, DateTime end) =>
+        !value.isBefore(start) && value.isBefore(end);
+    final filterEndDate = now.add(const Duration(days: 1));
+    final currentMovements = _ledgerMovements
+        .where(
+          (m) => inRange(m.entry.occurredAt, filterStartDate, filterEndDate),
+        )
+        .toList();
+    final manualCurrent = _transactions.where(
+      (txn) =>
+          inRange(txn.timestamp, filterStartDate, filterEndDate) &&
+          !_ledgerMovements.any((m) => m.entry.legacyTransactionId == txn.id),
     );
+    int grossMinor(Iterable<AccountLedgerMovement> movements) => movements
+        .where(
+          (m) =>
+              m.entry.direction == FinancialDirection.debit &&
+              m.entry.eventRole == LedgerEventRole.primary &&
+              m.groupType != TransactionGroupType.transfer &&
+              m.groupType != TransactionGroupType.reversal,
+        )
+        .fold(0, (sum, m) => sum + m.entry.amountMinor);
+    int refundsMinor(Iterable<AccountLedgerMovement> movements) => movements
+        .where(
+          (m) =>
+              m.entry.direction == FinancialDirection.credit &&
+              m.entry.eventRole == LedgerEventRole.refund,
+        )
+        .fold(0, (sum, m) => sum + m.entry.amountMinor);
+    final currentGrossMinor =
+        grossMinor(currentMovements) +
+        (manualCurrent
+                    .where((t) => t.type == TransactionType.debit)
+                    .fold<double>(0, (sum, t) => sum + t.amount) *
+                100)
+            .round();
+    final currentRefundsMinor = refundsMinor(currentMovements);
+    final totalSpentThisMonth = (currentGrossMinor - currentRefundsMinor) / 100;
 
-    final lastMonthExpenses = _transactions.where((txn) {
-      return txn.type == TransactionType.debit &&
-          txn.timestamp.isAfter(
-            lastPeriodStartDate.subtract(const Duration(microseconds: 1)),
-          ) &&
-          txn.timestamp.isBefore(
+    final previousMovements = _ledgerMovements
+        .where(
+          (m) => inRange(
+            m.entry.occurredAt,
+            lastPeriodStartDate,
             lastPeriodEndDate.add(const Duration(microseconds: 1)),
-          );
-    }).toList();
-
-    final totalSpentLastMonth = lastMonthExpenses.fold<double>(
-      0.0,
-      (sum, txn) => sum + txn.amount,
-    );
+          ),
+        )
+        .toList();
+    final totalSpentLastMonth =
+        (grossMinor(previousMovements) - refundsMinor(previousMovements)) / 100;
 
     double percentChange = 0.0;
     bool isIncrease = true;
@@ -185,9 +192,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
     // Category breakdown
     final Map<String, double> categoryTotals = {};
-    for (final txn in currentMonthExpenses) {
+    for (final movement in currentMovements) {
+      final entry = movement.entry;
+      final category = entry.category ?? 'Other';
+      if (entry.eventRole == LedgerEventRole.primary &&
+          entry.direction == FinancialDirection.debit &&
+          movement.groupType != TransactionGroupType.transfer &&
+          movement.groupType != TransactionGroupType.reversal) {
+        categoryTotals[category] =
+            (categoryTotals[category] ?? 0) + entry.amountMinor / 100;
+      } else if (entry.eventRole == LedgerEventRole.refund &&
+          entry.direction == FinancialDirection.credit) {
+        categoryTotals[category] =
+            (categoryTotals[category] ?? 0) - entry.amountMinor / 100;
+      }
+    }
+    for (final txn in manualCurrent.where(
+      (t) => t.type == TransactionType.debit,
+    )) {
       categoryTotals[txn.category] =
-          (categoryTotals[txn.category] ?? 0.0) + txn.amount;
+          (categoryTotals[txn.category] ?? 0) + txn.amount;
     }
     final sortedCategories = categoryTotals.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -195,9 +219,24 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     // Account breakdown (spending per account)
     final Map<int, double> accountTotals = {};
     final Map<int, int> accountTxnCounts = {};
-    for (final txn in currentMonthExpenses) {
+    for (final movement in currentMovements) {
+      if (movement.entry.direction != FinancialDirection.debit ||
+          movement.entry.eventRole != LedgerEventRole.primary ||
+          movement.groupType == TransactionGroupType.transfer ||
+          movement.groupType == TransactionGroupType.reversal) {
+        continue;
+      }
+      accountTotals[movement.entry.accountId] =
+          (accountTotals[movement.entry.accountId] ?? 0) +
+          movement.entry.amountMinor / 100;
+      accountTxnCounts[movement.entry.accountId] =
+          (accountTxnCounts[movement.entry.accountId] ?? 0) + 1;
+    }
+    for (final txn in manualCurrent.where(
+      (t) => t.type == TransactionType.debit,
+    )) {
       accountTotals[txn.accountId] =
-          (accountTotals[txn.accountId] ?? 0.0) + txn.amount;
+          (accountTotals[txn.accountId] ?? 0) + txn.amount;
       accountTxnCounts[txn.accountId] =
           (accountTxnCounts[txn.accountId] ?? 0) + 1;
     }
@@ -217,14 +256,18 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          'Analytics',
-                          style: theme.textTheme.displayLarge?.copyWith(
-                            fontSize: 32,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textDark,
+                        Expanded(
+                          child: Text(
+                            'Analytics',
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.displayLarge?.copyWith(
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.textDark,
+                            ),
                           ),
                         ),
+                        const SizedBox(width: 8),
                         PopupMenuButton<String>(
                           onSelected: (String value) {
                             setState(() {
@@ -302,7 +345,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                'TOTAL SPENT',
+                                'NET SPENT',
                                 style: TextStyle(
                                   color: Colors.white.withOpacity(0.7),
                                   fontSize: 12,
@@ -324,6 +367,17 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               color: Colors.white,
                               fontSize: 32,
                               fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Gross ₹${(currentGrossMinor / 100).toStringAsFixed(2)}  •  '
+                            'Refunds ₹${(currentRefundsMinor / 100).toStringAsFixed(2)}',
+                            key: const Key('analytics-gross-refunds'),
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                           const SizedBox(height: 12),
@@ -608,20 +662,27 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          Text(
-                            '${percentage.toStringAsFixed(0)}%',
-                            style: const TextStyle(
-                              color: AppTheme.textMuted,
-                              fontSize: 11,
+                          Flexible(
+                            child: Text(
+                              '${percentage.toStringAsFixed(0)}%',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppTheme.textMuted,
+                                fontSize: 11,
+                              ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            '₹${entry.value.toStringAsFixed(0)}',
-                            style: const TextStyle(
-                              color: AppTheme.textDark,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              '₹${entry.value.toStringAsFixed(0)}',
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.end,
+                              style: const TextStyle(
+                                color: AppTheme.textDark,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ],

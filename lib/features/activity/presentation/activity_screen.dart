@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:expense_tracker/core/database/app_database.dart';
+import 'package:expense_tracker/core/models/financial_enums.dart';
+import 'package:expense_tracker/core/models/financial_presentations.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
@@ -16,6 +18,7 @@ class ActivityScreen extends StatefulWidget {
 class _ActivityScreenState extends State<ActivityScreen> {
   bool _isLoading = true;
   List<Transaction> _allTransactions = [];
+  List<TransactionStory> _stories = [];
   Map<int, String> _accountIdToNameMap = {};
   StreamSubscription? _transactionSubscription;
 
@@ -44,12 +47,14 @@ class _ActivityScreenState extends State<ActivityScreen> {
       final db = AppDatabase.instance;
       final transactions = await db.getAllTransactions();
       final accounts = await db.getAllAccounts();
+      final stories = await db.getTransactionStories();
 
       final accountMap = {for (final acc in accounts) acc.id!: acc.bankName};
 
       if (mounted) {
         setState(() {
           _allTransactions = transactions;
+          _stories = stories;
           _accountIdToNameMap = accountMap;
           _isLoading = false;
         });
@@ -161,7 +166,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          '${_allTransactions.length} items',
+                          '${_allTransactions.length + _stories.length} items',
                           style: const TextStyle(
                             color: AppTheme.primaryBlue,
                             fontSize: 12,
@@ -178,7 +183,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
-              else if (_allTransactions.isEmpty)
+              else if (_allTransactions.isEmpty && _stories.isEmpty)
                 SliverFillRemaining(
                   child: Center(
                     child: Column(
@@ -207,144 +212,208 @@ class _ActivityScreenState extends State<ActivityScreen> {
                     ),
                   ),
                 )
-              else
-                SliverList(
-                  delegate: SliverChildBuilderDelegate((context, index) {
-                    final header = groupHeaders[index];
-                    final txns = grouped[header]!;
+              else ...[
+                if (_stories.isNotEmpty)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
+                    sliver: SliverList.builder(
+                      itemCount: _stories.length,
+                      itemBuilder: (context, index) =>
+                          _buildTransactionStory(_stories[index]),
+                    ),
+                  ),
+                if (_allTransactions.isNotEmpty)
+                  SliverList(
+                    delegate: SliverChildBuilderDelegate((context, index) {
+                      final header = groupHeaders[index];
+                      final txns = grouped[header]!;
 
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(left: 4, bottom: 8),
-                            child: Text(
-                              header,
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: AppTheme.textMuted,
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                left: 4,
+                                bottom: 8,
+                              ),
+                              child: Text(
+                                header,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: AppTheme.textMuted,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
-                          ),
-                          Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(20),
-                              boxShadow: AppTheme.cardShadow,
-                            ),
-                            child: ListView.separated(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: txns.length,
-                              separatorBuilder: (context, i) => const Divider(
-                                height: 1,
-                                indent: 72,
-                                endIndent: 16,
-                                color: AppTheme.borderLight,
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: AppTheme.cardShadow,
                               ),
-                              itemBuilder: (context, i) {
-                                final txn = txns[i];
-                                final isCredit =
-                                    txn.type == TransactionType.credit;
-                                final bankName =
-                                    _accountIdToNameMap[txn.accountId] ??
-                                    'Unknown Account';
-                                final catColor = AppTheme.getCategoryColor(
-                                  txn.category,
-                                );
-
-                                return ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 6,
-                                  ),
-                                  leading: Container(
-                                    width: 44,
-                                    height: 44,
-                                    decoration: BoxDecoration(
-                                      color: catColor.withOpacity(0.12),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Icon(
-                                      AppTheme.getCategoryIcon(txn.category),
-                                      color: catColor,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  title: Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          txn.merchant,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: AppTheme.textDark,
-                                            fontSize: 15,
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
+                              child: Material(
+                                color: Colors.transparent,
+                                borderRadius: BorderRadius.circular(20),
+                                clipBehavior: Clip.antiAlias,
+                                child: ListView.separated(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: txns.length,
+                                  separatorBuilder: (context, i) =>
+                                      const Divider(
+                                        height: 1,
+                                        indent: 72,
+                                        endIndent: 16,
+                                        color: AppTheme.borderLight,
                                       ),
-                                      const SizedBox(width: 8),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 3,
-                                        ),
+                                  itemBuilder: (context, i) {
+                                    final txn = txns[i];
+                                    final isCredit =
+                                        txn.type == TransactionType.credit;
+                                    final bankName =
+                                        _accountIdToNameMap[txn.accountId] ??
+                                        'Unknown Account';
+                                    final catColor = AppTheme.getCategoryColor(
+                                      txn.category,
+                                    );
+
+                                    return ListTile(
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 6,
+                                          ),
+                                      leading: Container(
+                                        width: 44,
+                                        height: 44,
                                         decoration: BoxDecoration(
-                                          color: AppTheme.primaryBlue
-                                              .withOpacity(0.06),
+                                          color: catColor.withOpacity(0.12),
                                           borderRadius: BorderRadius.circular(
-                                            6,
+                                            12,
                                           ),
                                         ),
-                                        child: Text(
-                                          bankName,
-                                          style: const TextStyle(
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.bold,
-                                            color: AppTheme.primaryBlue,
+                                        child: Icon(
+                                          AppTheme.getCategoryIcon(
+                                            txn.category,
                                           ),
+                                          color: catColor,
+                                          size: 20,
                                         ),
                                       ),
-                                    ],
-                                  ),
-                                  subtitle: Text(
-                                    _formatTime(txn.timestamp),
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: AppTheme.textMuted,
-                                    ),
-                                  ),
-                                  trailing: Text(
-                                    '${isCredit ? "+" : "-"} ₹${txn.amount.toStringAsFixed(2)}',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w900,
-                                      fontSize: 16,
-                                      color: isCredit
-                                          ? AppTheme.successGreen
-                                          : AppTheme.errorRed,
-                                    ),
-                                  ),
-                                  onTap: () => _openTransactionSheet(txn),
-                                );
-                              },
+                                      title: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              txn.merchant,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                color: AppTheme.textDark,
+                                                fontSize: 15,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 3,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: AppTheme.primaryBlue
+                                                  .withOpacity(0.06),
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              bankName,
+                                              style: const TextStyle(
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.bold,
+                                                color: AppTheme.primaryBlue,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      subtitle: Text(
+                                        _formatTime(txn.timestamp),
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: AppTheme.textMuted,
+                                            ),
+                                      ),
+                                      trailing: Text(
+                                        '${isCredit ? "+" : "-"} ₹${txn.amount.toStringAsFixed(2)}',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 16,
+                                          color: isCredit
+                                              ? AppTheme.successGreen
+                                              : AppTheme.errorRed,
+                                        ),
+                                      ),
+                                      onTap: () => _openTransactionSheet(txn),
+                                    );
+                                  },
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }, childCount: groupHeaders.length),
-                ),
+                          ],
+                        ),
+                      );
+                    }, childCount: groupHeaders.length),
+                  ),
+              ],
               // Spacer to prevent content being covered by the bottom shell nav bar (height 72 + 24 bottom padding)
               const SliverToBoxAdapter(child: SizedBox(height: 120)),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildTransactionStory(TransactionStory story) {
+    final group = story.group;
+    final merchant = group.merchantNormalized ?? 'Related transaction';
+    return Card(
+      key: ValueKey('transaction-story-${group.id}'),
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ExpansionTile(
+        title: Text(
+          '$merchant — Net ₹${(group.netExpenseMinor / 100).toStringAsFixed(2)}',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(group.groupType.name),
+        children: [
+          for (final movement in story.movements)
+            ListTile(
+              dense: true,
+              title: Text(
+                '${movement.accountName}: '
+                '${movement.entry.direction == FinancialDirection.credit ? '+' : '-'}'
+                '₹${(movement.entry.amountMinor / 100).toStringAsFixed(2)}',
+              ),
+              subtitle: Text(movement.entry.eventRole.name),
+            ),
+          for (final event in story.informationalEvents)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.info_outline),
+              title: Text(
+                event.eventType == FinancialEventType.refund
+                    ? 'Refund initiated'
+                    : event.eventType.name,
+              ),
+              subtitle: const Text('Informational — no ledger movement'),
+            ),
+        ],
       ),
     );
   }

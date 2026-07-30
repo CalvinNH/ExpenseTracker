@@ -1,197 +1,221 @@
 import 'dart:io';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
-/// Handles one-time migration of an existing plaintext SQLite database to
-/// SQLCipher-encrypted format.
-///
-/// Migration sequence enforces strict atomicity:
-///   1. Check flag → skip if already migrated.
-///   2. Open plaintext DB → ATTACH temp_encrypted.db → sqlcipher_export.
-///   3. Detach & close.
-///   4. Verify temp_encrypted.db integrity with the passphrase.
-///   5. Only on success: delete old file, rename temp → production.
-///   6. Write completion flag only after swap is 100% complete.
-///
-/// Any failure before step 5 leaves the original plaintext file untouched.
+enum DatabaseFileState { absent, encrypted, plaintext, unreadable }
+
+class DatabaseMigrationException implements Exception {
+  const DatabaseMigrationException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => 'DatabaseMigrationException($code): $message';
+}
+
+/// Detects the database from its contents instead of trusting a preference
+/// flag, and migrates plaintext databases without ever deleting the only
+/// known-good copy.
 class DatabaseMigrator {
   DatabaseMigrator._();
 
   static final DatabaseMigrator instance = DatabaseMigrator._();
 
-  static const _migrationFlagKey = 'sqlcipher_migration_complete';
-  static const _androidOptions = AndroidOptions(
-    encryptedSharedPreferences: true,
-  );
+  static const _temporarySuffix = '.encrypting';
+  static const _backupSuffix = '.pre_encryption_backup';
 
-  final FlutterSecureStorage _encryptedStorage = const FlutterSecureStorage(
-    aOptions: _androidOptions,
-  );
-  final FlutterSecureStorage _legacyStorage = const FlutterSecureStorage();
+  Future<DatabaseFileState> prepare(String dbPath, String passphrase) async {
+    _validatePassphrase(passphrase);
+    await _recoverInterruptedSwap(dbPath, passphrase);
 
-  Future<bool> _isMigrationCompleted() async {
-    try {
-      final flag1 = await _encryptedStorage.read(key: _migrationFlagKey);
-      if (flag1 == 'true') return true;
-      final flag2 = await _legacyStorage.read(key: _migrationFlagKey);
-      if (flag2 == 'true') return true;
-    } catch (_) {}
-    return false;
+    final state = await inspect(dbPath, passphrase);
+    switch (state) {
+      case DatabaseFileState.absent:
+      case DatabaseFileState.encrypted:
+        return state;
+      case DatabaseFileState.plaintext:
+        await _performEncryptionMigration(dbPath, passphrase);
+        return DatabaseFileState.encrypted;
+      case DatabaseFileState.unreadable:
+        throw const DatabaseMigrationException(
+          'database_unreadable',
+          'The database exists but cannot be decrypted or validated. '
+              'The original file has been preserved.',
+        );
+    }
   }
 
-  /// Runs the plaintext → encrypted migration if it hasn't been completed yet.
-  ///
-  /// This is a no-op for:
-  /// - Fresh installs (no plaintext DB exists, flag is absent).
-  /// - Already-migrated installs (flag is 'true').
-  ///
-  /// [dbPath] is the full filesystem path to the production database file.
-  /// [passphrase] is the Base64URL-encoded key from [SecurityKeyManager].
-  Future<void> migrateIfNeeded(String dbPath, String passphrase) async {
-    // Step 1: Check flag — skip if already migrated
-    if (await _isMigrationCompleted()) {
-      return;
+  Future<DatabaseFileState> inspect(String dbPath, String passphrase) async {
+    if (!File(dbPath).existsSync()) return DatabaseFileState.absent;
+    if (await _canReadEncrypted(dbPath, passphrase)) {
+      return DatabaseFileState.encrypted;
     }
-
-    // If the database file doesn't exist, this is a fresh install — no migration needed
-    final dbFile = File(dbPath);
-    if (!dbFile.existsSync()) {
-      return;
+    if (await _canReadPlaintext(dbPath)) {
+      return DatabaseFileState.plaintext;
     }
-
-    // Attempt to detect if the database is plaintext by opening it without a password.
-    // If it opens and we can query sqlite_master, it's unencrypted.
-    bool isPlaintext = false;
-    try {
-      final testDb = await openDatabase(dbPath, readOnly: true);
-      // If openDatabase succeeds without a password on an encrypted DB,
-      // SQLCipher would throw. Success means plaintext.
-      await testDb.rawQuery('SELECT count(*) FROM sqlite_master');
-      await testDb.close();
-      isPlaintext = true;
-    } catch (_) {
-      // Database is either encrypted already or corrupt.
-      // In both cases, skip migration.
-      isPlaintext = false;
-    }
-
-    if (!isPlaintext) {
-      // Already encrypted or doesn't need migration — mark and return
-      await _markMigrationCompleted();
-      return;
-    }
-
-    // Steps 2-6: Perform the actual encryption migration
-    await _performEncryptionMigration(dbPath, passphrase);
+    return DatabaseFileState.unreadable;
   }
 
-  /// Executes the atomic migration: export → verify → swap → flag.
+  Future<void> _recoverInterruptedSwap(String dbPath, String passphrase) async {
+    final production = File(dbPath);
+    final temporary = File('$dbPath$_temporarySuffix');
+    final backup = File('$dbPath$_backupSuffix');
+
+    if (!production.existsSync() && backup.existsSync()) {
+      await backup.rename(dbPath);
+    }
+
+    if (production.existsSync() && backup.existsSync()) {
+      final productionState = await inspect(dbPath, passphrase);
+      if (productionState == DatabaseFileState.encrypted) {
+        await backup.delete();
+      } else {
+        final backupState = await inspect(backup.path, passphrase);
+        if (backupState == DatabaseFileState.encrypted ||
+            backupState == DatabaseFileState.plaintext) {
+          final unreadablePath =
+              '$dbPath.unreadable.${DateTime.now().millisecondsSinceEpoch}';
+          await production.rename(unreadablePath);
+          await backup.rename(dbPath);
+        }
+      }
+    }
+
+    if (temporary.existsSync()) {
+      final productionState = await inspect(dbPath, passphrase);
+      if (productionState == DatabaseFileState.encrypted) {
+        await temporary.delete();
+      } else {
+        final temporaryState = await inspect(temporary.path, passphrase);
+        if (!production.existsSync() &&
+            temporaryState == DatabaseFileState.encrypted) {
+          await temporary.rename(dbPath);
+        } else {
+          await temporary.delete();
+        }
+      }
+    }
+  }
+
   Future<void> _performEncryptionMigration(
     String dbPath,
     String passphrase,
   ) async {
-    final tempEncryptedPath = '$dbPath.tmp_encrypted';
+    final temporaryPath = '$dbPath$_temporarySuffix';
+    final backupPath = '$dbPath$_backupSuffix';
+    final temporary = File(temporaryPath);
+    final backup = File(backupPath);
+    if (temporary.existsSync()) await temporary.delete();
+    await _deleteSidecars(temporaryPath);
+    if (backup.existsSync()) await backup.delete();
 
-    // Clean up any leftover temp file from a previously interrupted migration
-    final tempFile = File(tempEncryptedPath);
-    if (tempFile.existsSync()) {
-      tempFile.deleteSync();
-    }
-
-    // Step 2: Open the plaintext database (no password)
-    final plaintextDb = await openDatabase(dbPath, readOnly: true);
-
+    final plaintext = await openDatabase(dbPath);
+    var attached = false;
     try {
-      // Step 3: Attach encrypted DB and export
-      // Use single quotes around the passphrase to pass it as a SQL string literal.
-      // Defense-in-depth: the passphrase is interpolated into the ATTACH
-      // statement below. That is safe ONLY because SecurityKeyManager
-      // generates Base64URL keys ([A-Za-z0-9_-]). Enforce the invariant so
-      // a future change to key generation cannot introduce SQL injection.
-      if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(passphrase)) {
-        throw ArgumentError('Invalid passphrase format for DB migration.');
-      }
-      await plaintextDb.execute(
-        "ATTACH DATABASE '$tempEncryptedPath' AS encrypted KEY '$passphrase'",
+      // Consolidate WAL content before the file-level swap.
+      await plaintext.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+      await plaintext.execute(
+        "ATTACH DATABASE '${_sqlLiteral(temporaryPath)}' "
+        "AS encrypted KEY '${_sqlLiteral(passphrase)}'",
       );
-      await plaintextDb.rawQuery("SELECT sqlcipher_export('encrypted')");
-      await plaintextDb.execute('DETACH DATABASE encrypted');
+      attached = true;
+      await plaintext.rawQuery("SELECT sqlcipher_export('encrypted')");
+      await plaintext.execute('DETACH DATABASE encrypted');
+      attached = false;
     } finally {
-      // Step 4: Close the plaintext connection regardless of success/failure
-      await plaintextDb.close();
-    }
-
-    // Step 5: Integrity Verification Gate
-    // Open the newly created encrypted file with the passphrase and verify
-    // that the schema and data survived the export.
-    final verified = await _verifyEncryptedDatabase(
-      tempEncryptedPath,
-      passphrase,
-    );
-
-    if (!verified) {
-      // Verification failed — abort. Delete the corrupt temp file but
-      // leave the original plaintext database completely untouched.
-      if (tempFile.existsSync()) {
-        tempFile.deleteSync();
+      if (attached) {
+        try {
+          await plaintext.execute('DETACH DATABASE encrypted');
+        } catch (_) {
+          // Closing the connection releases the attachment.
+        }
       }
-      // Do NOT write the migration flag — next launch will retry.
-      return;
+      await plaintext.close();
     }
 
-    // Step 6: Atomic File Swap
-    // Delete old plaintext file, rename temp encrypted → production path.
-    final originalFile = File(dbPath);
-    if (originalFile.existsSync()) {
-      originalFile.deleteSync();
+    if (!await _canReadEncrypted(temporaryPath, passphrase)) {
+      if (temporary.existsSync()) await temporary.delete();
+      throw const DatabaseMigrationException(
+        'encrypted_export_invalid',
+        'The encrypted copy did not pass validation; the original is intact.',
+      );
     }
-    tempFile.renameSync(dbPath);
 
-    // Also clean up any SQLite journal/wal files from the old plaintext DB
-    for (final suffix in ['-journal', '-wal', '-shm']) {
-      final sidecarFile = File('$dbPath$suffix');
-      if (sidecarFile.existsSync()) {
-        sidecarFile.deleteSync();
+    await _deleteSidecars(dbPath);
+    final production = File(dbPath);
+    await production.rename(backupPath);
+    try {
+      await temporary.rename(dbPath);
+      if (!await _canReadEncrypted(dbPath, passphrase)) {
+        throw const DatabaseMigrationException(
+          'promoted_database_invalid',
+          'The promoted encrypted database did not pass validation.',
+        );
       }
+      await backup.delete();
+    } catch (_) {
+      if (File(dbPath).existsSync()) {
+        await File(dbPath).delete();
+      }
+      if (backup.existsSync()) {
+        await backup.rename(dbPath);
+      }
+      rethrow;
     }
-
-    // Step 7: Write completion flag ONLY after file swap is fully complete
-    await _markMigrationCompleted();
   }
 
-  /// Opens the encrypted database and runs validation queries to confirm
-  /// the export produced a valid, readable, encrypted database.
-  ///
-  /// Returns `true` if the database opens successfully and both tables exist
-  /// with queryable row counts. Returns `false` on any error.
-  Future<bool> _verifyEncryptedDatabase(String path, String passphrase) async {
+  Future<bool> _canReadEncrypted(String path, String passphrase) async {
+    Database? db;
     try {
-      final db = await openDatabase(path, password: passphrase, readOnly: true);
-      try {
-        // Verify both tables exist and are queryable
-        final accountResult = await db.rawQuery(
-          'SELECT COUNT(*) as cnt FROM accounts',
-        );
-        final txnResult = await db.rawQuery(
-          'SELECT COUNT(*) as cnt FROM transactions',
-        );
-
-        // Basic sanity: queries must return results (even if count is 0)
-        if (accountResult.isEmpty || txnResult.isEmpty) {
-          return false;
-        }
-
-        return true;
-      } finally {
-        await db.close();
+      db = await openDatabase(path, password: passphrase, readOnly: true);
+      await db.rawQuery('SELECT count(*) FROM sqlite_master');
+      final quickCheck = await db.rawQuery('PRAGMA quick_check(1)');
+      if (quickCheck.isEmpty ||
+          quickCheck.first.values.first.toString().toLowerCase() != 'ok') {
+        return false;
       }
+      final cipherCheck = await db.rawQuery('PRAGMA cipher_integrity_check');
+      return cipherCheck.isEmpty &&
+          quickCheck.isNotEmpty &&
+          quickCheck.first.values.first.toString().toLowerCase() == 'ok';
     } catch (_) {
       return false;
+    } finally {
+      if (db?.isOpen ?? false) await db!.close();
     }
   }
 
-  Future<void> _markMigrationCompleted() async {
-    await _encryptedStorage.write(key: _migrationFlagKey, value: 'true');
+  Future<bool> _canReadPlaintext(String path) async {
+    Database? db;
+    try {
+      db = await openDatabase(path, readOnly: true);
+      await db.rawQuery('SELECT count(*) FROM sqlite_master');
+      final quickCheck = await db.rawQuery('PRAGMA quick_check(1)');
+      return quickCheck.isNotEmpty &&
+          quickCheck.first.values.first.toString().toLowerCase() == 'ok';
+    } catch (_) {
+      return false;
+    } finally {
+      if (db?.isOpen ?? false) await db!.close();
+    }
   }
+
+  Future<void> _deleteSidecars(String path) async {
+    for (final suffix in const ['-journal', '-wal', '-shm']) {
+      final file = File('$path$suffix');
+      if (file.existsSync()) await file.delete();
+    }
+  }
+
+  void _validatePassphrase(String value) {
+    if (!RegExp(r'^[A-Za-z0-9_-]{43}=?$').hasMatch(value)) {
+      throw const DatabaseMigrationException(
+        'invalid_key_material',
+        'Database key material has an invalid format.',
+      );
+    }
+  }
+
+  String _sqlLiteral(String value) => value.replaceAll("'", "''");
 }

@@ -11,5 +11,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(app.ExpenseTrackerApp), findsOneWidget);
+    expect(
+      find.text('Could not open database'),
+      findsNothing,
+      reason: 'SQLCipher must open and validate during cold start.',
+    );
   });
 }
