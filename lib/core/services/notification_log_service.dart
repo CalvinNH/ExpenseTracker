@@ -2,14 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 
-/// Persistent file-based logger for the notification ingestion pipeline.
+/// Debug-build-only file logger for the notification ingestion pipeline.
 ///
-/// Every notification received by the app is logged with its raw data,
-/// filter decisions, parser results, and database outcomes. Logs are
-/// stored in `notification_debug.log` inside the app's documents
-/// directory and auto-rotated to keep at most [_maxEntries] entries.
+/// Release builds never create or append this file. Debug logs contain
+/// operational metadata only and are auto-rotated to [_maxEntries] entries.
 class NotificationLogService {
   NotificationLogService._();
 
@@ -45,6 +42,7 @@ class NotificationLogService {
 
   /// Append a structured log entry.
   Future<void> log(String tag, String message) async {
+    if (kReleaseMode) return;
     try {
       await _ensureInitialized();
       final file = await _file;
@@ -74,59 +72,11 @@ class NotificationLogService {
     );
   }
 
-  /// Log a filter decision (pass / drop with reason).
-  Future<void> logFilterDecision({
-    required String packageName,
-    required bool passed,
-    String? reason,
-  }) async {
-    final status = passed ? 'PASS' : 'DROP';
-    await log(
-      'FILTER',
-      '$status pkg=$packageName${reason != null ? ' | reason=$reason' : ''}',
-    );
-  }
-
-  /// Log the parser result.
-  Future<void> logParseResult({
-    required bool success,
-    String? parsedSummary,
-    String? rawInput,
-  }) async {
-    if (success) {
-      await log('PARSER', 'OK | $parsedSummary');
-    } else {
-      await log(
-        'PARSER',
-        kReleaseMode
-            ? 'FAIL | code=parser_no_match'
-            : 'FAIL | input="$rawInput"',
-      );
-    }
-  }
-
-  /// Log the duplicate check result.
-  Future<void> logDuplicateCheck({
-    required bool isDuplicate,
-    String? details,
-  }) async {
-    await log(
-      'DEDUP',
-      'duplicate=$isDuplicate${details != null ? ' | $details' : ''}',
-    );
-  }
-
-  /// Log a successful database write.
-  Future<void> logDatabaseWrite({
-    required int transactionId,
-    required String accountName,
-  }) async {
-    await log('DB_WRITE', 'OK | txnId=$transactionId | account=$accountName');
-  }
-
   /// Log an error at any stage.
-  Future<void> logError(String stage, String error) async {
-    await log('ERROR', '$stage | $error');
+  Future<void> logError(String stage, String _) async {
+    // Exception messages are deliberately discarded: plugin/database errors
+    // can embed arguments supplied by a notification.
+    await log('ERROR', '$stage | failure');
   }
 
   /// Trim the log file to keep only the last [_maxEntries] lines.
@@ -147,6 +97,7 @@ class NotificationLogService {
 
   /// Read the full log contents.
   Future<String> readLog() async {
+    if (kReleaseMode) return '(Logging disabled in release builds)';
     try {
       await _ensureInitialized();
       final file = await _file;
@@ -157,19 +108,23 @@ class NotificationLogService {
     return '(No log data available)';
   }
 
-  /// Share the log file via the system share sheet.
-  Future<void> exportLog() async {
-    await _ensureInitialized();
-    final file = await _file;
-    if (await file.exists()) {
-      await Share.shareXFiles([
-        XFile(file.path),
-      ], text: 'Expense Tracker — Notification Debug Log');
-    }
+  /// Deletes logs left by older versions when running a release build.
+  Future<void> enforcePrivacyPolicy() async {
+    if (!kReleaseMode) return;
+    try {
+      final file = await _file;
+      if (await file.exists()) await file.delete();
+      _initialized = false;
+      _logFile = null;
+    } catch (_) {}
   }
 
   /// Clear the log file.
   Future<void> clearLog() async {
+    if (kReleaseMode) {
+      await enforcePrivacyPolicy();
+      return;
+    }
     try {
       final file = await _file;
       if (await file.exists()) {

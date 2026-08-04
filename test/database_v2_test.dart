@@ -4,6 +4,7 @@ import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/ledger_entry.dart';
+import 'package:expense_tracker/core/models/notification_template.dart';
 import 'package:expense_tracker/core/models/parsed_financial_event.dart';
 import 'package:expense_tracker/core/models/raw_notification_event.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,6 +53,7 @@ void main() {
     expect(tableNames, contains(AppDatabase.tableParsedEventLedgerLinks));
     expect(tableNames, contains(AppDatabase.tableParsedEventGroupLinks));
     expect(tableNames, contains(AppDatabase.tableNotificationTemplates));
+    expect(tableNames, contains(AppDatabase.tableParserDiagnostics));
 
     final rawColumns = await db.rawQuery(
       'PRAGMA table_info(${AppDatabase.tableRawNotificationEvents})',
@@ -67,6 +69,7 @@ void main() {
       parsedColumns.map((row) => row['name']),
       containsAll([
         'payment_rail',
+        'classification_metadata',
         'ledger_duplicate_confidence',
         'ledger_duplicate_rationale',
       ]),
@@ -82,6 +85,17 @@ void main() {
         'is_inconsistent',
         'inconsistency_reason',
       ]),
+    );
+    final templateColumns = await db.rawQuery(
+      'PRAGMA table_info(${AppDatabase.tableNotificationTemplates})',
+    );
+    expect(
+      templateColumns.map((row) => row['name']),
+      contains('promotion_status'),
+    );
+    expect(
+      templateColumns.map((row) => row['name']),
+      isNot(contains('is_promoted')),
     );
 
     final indexes = await db.rawQuery(
@@ -100,7 +114,113 @@ void main() {
     expect(indexNames, contains('idx_event_ledger_link'));
     expect(indexNames, contains('idx_event_group_link'));
     expect(indexNames, contains('idx_notification_templates_package'));
+    expect(indexNames, contains('idx_parser_diagnostics_observed'));
   });
+
+  test(
+    'version 8 template state migrates to explicit promotion status',
+    () async {
+      final db = await AppDatabase.instance.database;
+      await db.execute('DROP INDEX idx_notification_templates_package');
+      await db.execute('DROP TABLE notification_templates');
+      await db.execute('''
+      CREATE TABLE notification_templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL,
+        source_package TEXT NOT NULL,
+        observed_count INTEGER NOT NULL,
+        successful_parse_count INTEGER NOT NULL,
+        conflicting_parse_count INTEGER NOT NULL,
+        last_observed TEXT NOT NULL,
+        field_position_metadata TEXT NOT NULL,
+        is_promoted INTEGER NOT NULL,
+        role_signature TEXT NOT NULL,
+        UNIQUE(fingerprint, source_package)
+      )
+    ''');
+      await db.insert('notification_templates', {
+        'fingerprint': '<AMOUNT> spent',
+        'source_package': 'COM.EXAMPLE.BANK',
+        'observed_count': 3,
+        'successful_parse_count': 3,
+        'conflicting_parse_count': 0,
+        'last_observed': DateTime.utc(2026, 8, 1).toIso8601String(),
+        'field_position_metadata':
+            '{"version":1,"fields":[{"type":"<AMOUNT>","token":0}]}',
+        'is_promoted': 1,
+        'role_signature':
+            'transaction|debit|completed|purchase|transactionAmount',
+      });
+      await db.setVersion(8);
+      await AppDatabase.instance.close();
+
+      final migrated = await AppDatabase.instance.database;
+      expect(await migrated.getVersion(), AppDatabase.databaseVersion);
+      final template = await AppDatabase.instance.getNotificationTemplate(
+        fingerprint: '<AMOUNT> spent',
+        sourcePackage: 'COM.EXAMPLE.BANK',
+      );
+      expect(template, isNotNull);
+      expect(
+        template!.promotionStatus,
+        NotificationTemplatePromotionStatus.promoted,
+      );
+      expect(template.sourcePackage, 'COM.EXAMPLE.BANK');
+      final columns = await migrated.rawQuery(
+        'PRAGMA table_info(notification_templates)',
+      );
+      expect(columns.map((row) => row['name']), contains('promotion_status'));
+      expect(columns.map((row) => row['name']), isNot(contains('is_promoted')));
+    },
+  );
+
+  test('version 9 adds forward-compatible classifier provenance', () async {
+    final db = await AppDatabase.instance.database;
+    await db.execute(
+      'ALTER TABLE parsed_financial_events DROP COLUMN classification_metadata',
+    );
+    await db.setVersion(9);
+    await AppDatabase.instance.close();
+
+    final migrated = await AppDatabase.instance.database;
+    expect(await migrated.getVersion(), AppDatabase.databaseVersion);
+    final columns = await migrated.rawQuery(
+      'PRAGMA table_info(parsed_financial_events)',
+    );
+    final classificationColumn = columns.singleWhere(
+      (row) => row['name'] == 'classification_metadata',
+    );
+    expect(classificationColumn['notnull'], 1);
+    expect(classificationColumn['dflt_value'], "'{}'");
+  });
+
+  test(
+    'version 10 adds local parser diagnostics without rewriting data',
+    () async {
+      final db = await AppDatabase.instance.database;
+      await db.execute('DROP TABLE parser_diagnostics');
+      await db.setVersion(10);
+      await AppDatabase.instance.close();
+
+      final migrated = await AppDatabase.instance.database;
+      expect(await migrated.getVersion(), AppDatabase.databaseVersion);
+      final columns = await migrated.rawQuery(
+        'PRAGMA table_info(parser_diagnostics)',
+      );
+      expect(
+        columns.map((row) => row['name']),
+        containsAll(<String>[
+          'parser_version',
+          'extractors_used',
+          'decision',
+          'confidence',
+          'failure_code',
+          'source_category',
+          'structural_fingerprint',
+        ]),
+      );
+    },
+  );
 
   test('version 1 upgrade preserves account and transaction data', () async {
     final path = AppDatabase.databasePathOverrideForTesting!;

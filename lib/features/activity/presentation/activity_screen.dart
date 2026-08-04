@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
-import 'package:expense_tracker/core/models/financial_presentations.dart';
 import 'package:expense_tracker/core/models/review_transaction.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
+import 'package:expense_tracker/core/widgets/app_toast.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
 import 'package:expense_tracker/features/transactions/presentation/add_edit_transaction_sheet.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +22,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
   List<ReviewTransaction> _reviewTransactions = [];
   Map<int, String> _accountIdToNameMap = {};
   StreamSubscription? _transactionSubscription;
+  StreamSubscription? _reviewSubscription;
 
   @override
   void initState() {
@@ -34,11 +35,17 @@ class _ActivityScreenState extends State<ActivityScreen> {
         }
       },
     );
+    _reviewSubscription = NotificationService.onReviewInboxChanged.listen((_) {
+      if (mounted) {
+        _loadData();
+      }
+    });
   }
 
   @override
   void dispose() {
     _transactionSubscription?.cancel();
+    _reviewSubscription?.cancel();
     super.dispose();
   }
 
@@ -93,6 +100,47 @@ class _ActivityScreenState extends State<ActivityScreen> {
       builder: (_) => AddEditTransactionSheet(reviewTransaction: review),
     );
     if (result == true && mounted) _loadData();
+  }
+
+  Future<void> _dismissReviewTransaction(ReviewTransaction review) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Dismiss transaction?'),
+        content: const Text(
+          'This removes the item from review without changing any account '
+          'balance. Its source metadata remains stored locally.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Dismiss'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || review.parsedEvent.id == null) return;
+
+    try {
+      await AppDatabase.instance.dismissReviewedTransaction(
+        review.parsedEvent.id!,
+      );
+      if (!mounted) return;
+      await _loadData();
+      if (mounted) AppToast.show(context, 'Review item dismissed');
+    } catch (error) {
+      if (mounted) {
+        AppToast.show(
+          context,
+          'Could not dismiss review item: $error',
+          isError: true,
+        );
+      }
+    }
   }
 
   String _getGroupHeader(DateTime dt) {
@@ -176,7 +224,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                           vertical: 6,
                         ),
                         decoration: BoxDecoration(
-                          color: AppTheme.primaryBlue.withOpacity(0.08),
+                          color: AppTheme.primaryBlue.withValues(alpha: 0.08),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
@@ -197,43 +245,13 @@ class _ActivityScreenState extends State<ActivityScreen> {
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
-              else if (_allTransactions.isEmpty && _reviewTransactions.isEmpty)
-                SliverFillRemaining(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.receipt_long_outlined,
-                          size: 72,
-                          color: AppTheme.textMuted.withOpacity(0.4),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No transactions yet',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            color: AppTheme.textDark,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Transactions will show up here as they occur',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: AppTheme.textMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
               else ...[
-                if (_reviewTransactions.isNotEmpty)
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
-                    sliver: SliverToBoxAdapter(
-                      child: _buildReviewSection(_reviewTransactions),
-                    ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
+                  sliver: SliverToBoxAdapter(
+                    child: _buildReviewSection(_reviewTransactions),
                   ),
+                ),
                 if (_allTransactions.isNotEmpty)
                   SliverList(
                     delegate: SliverChildBuilderDelegate((context, index) {
@@ -304,7 +322,9 @@ class _ActivityScreenState extends State<ActivityScreen> {
                                         width: 44,
                                         height: 44,
                                         decoration: BoxDecoration(
-                                          color: catColor.withOpacity(0.12),
+                                          color: catColor.withValues(
+                                            alpha: 0.12,
+                                          ),
                                           borderRadius: BorderRadius.circular(
                                             12,
                                           ),
@@ -338,7 +358,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                                             ),
                                             decoration: BoxDecoration(
                                               color: AppTheme.primaryBlue
-                                                  .withOpacity(0.06),
+                                                  .withValues(alpha: 0.06),
                                               borderRadius:
                                                   BorderRadius.circular(6),
                                             ),
@@ -391,109 +411,63 @@ class _ActivityScreenState extends State<ActivityScreen> {
     );
   }
 
-  Widget _buildTransactionStory(TransactionStory story) {
-    final group = story.group;
-    final merchant = group.merchantNormalized ?? 'Related transaction';
-    return Card(
-      key: ValueKey('transaction-story-${group.id}'),
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ExpansionTile(
-        title: Text(
-          '$merchant — Net ₹${(group.netExpenseMinor / 100).toStringAsFixed(2)}',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(group.groupType.name),
-        children: [
-          for (final movement in story.movements)
-            ListTile(
-              dense: true,
-              title: Text(
-                '${movement.accountName}: '
-                '${movement.entry.direction == FinancialDirection.credit ? '+' : '-'}'
-                '₹${(movement.entry.amountMinor / 100).toStringAsFixed(2)}',
-              ),
-              subtitle: Text(movement.entry.eventRole.name),
-            ),
-          for (final event in story.informationalEvents)
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.info_outline),
-              title: Text(
-                event.eventType == FinancialEventType.refund
-                    ? 'Refund initiated'
-                    : event.eventType.name,
-              ),
-              subtitle: const Text('Informational — no ledger movement'),
-            ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildReviewSection(List<ReviewTransaction> reviews) {
     final theme = Theme.of(context);
-    return Container(
+    return Column(
       key: const Key('transactions-for-review'),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: AppTheme.cardShadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.fact_check_outlined,
-                  color: AppTheme.primaryBlue,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Transactions for review',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textDark,
-                        ),
-                      ),
-                      const Text(
-                        'Confirm pre-filled details to include them in tracking.',
-                        style: TextStyle(
-                          color: AppTheme.textMuted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Text(
-                  '${reviews.length}',
-                  style: const TextStyle(
-                    color: AppTheme.primaryBlue,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            'Transactions for review',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: AppTheme.textMuted,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
             ),
           ),
-          const Divider(height: 1, color: AppTheme.borderLight),
-          for (var index = 0; index < reviews.length; index++) ...[
-            _buildReviewTile(reviews[index]),
-            if (index != reviews.length - 1)
-              const Divider(
-                height: 1,
-                indent: 72,
-                color: AppTheme.borderLight,
-              ),
-          ],
-        ],
-      ),
+        ),
+        Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: AppTheme.cardShadow,
+          ),
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+            clipBehavior: Clip.antiAlias,
+            child: reviews.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 22),
+                    child: Center(
+                      child: Text(
+                        'Nothing to review!',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  )
+                : Column(
+                    children: [
+                      for (var index = 0; index < reviews.length; index++) ...[
+                        _buildReviewTile(reviews[index]),
+                        if (index != reviews.length - 1)
+                          const Divider(
+                            height: 1,
+                            indent: 72,
+                            color: AppTheme.borderLight,
+                          ),
+                      ],
+                    ],
+                  ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -504,7 +478,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
         parsed.merchantRaw ?? parsed.merchantNormalized ?? 'Review transaction';
     final amount = parsed.amountMinor == null
         ? 'Amount needs review'
-        : '${isCredit ? '+' : '-'} â‚¹${(parsed.amountMinor! / 100).toStringAsFixed(2)}';
+        : '${isCredit ? '+' : '-'} \u20B9${(parsed.amountMinor! / 100).toStringAsFixed(2)}';
     final evidence = [
       if (parsed.institutionId != null) parsed.institutionId!.toUpperCase(),
       if (parsed.instrumentLastFour != null) '••${parsed.instrumentLastFour}',
@@ -516,13 +490,10 @@ class _ActivityScreenState extends State<ActivityScreen> {
         width: 44,
         height: 44,
         decoration: BoxDecoration(
-          color: AppTheme.primaryBlue.withOpacity(.1),
+          color: AppTheme.primaryBlue.withValues(alpha: .1),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: const Icon(
-          Icons.edit_note_rounded,
-          color: AppTheme.primaryBlue,
-        ),
+        child: const Icon(Icons.edit_note_rounded, color: AppTheme.primaryBlue),
       ),
       title: Text(
         merchant,
@@ -533,17 +504,30 @@ class _ActivityScreenState extends State<ActivityScreen> {
           color: AppTheme.textDark,
         ),
       ),
-      subtitle: Text(
-        evidence,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Text(
-        amount,
-        style: TextStyle(
-          fontWeight: FontWeight.w800,
-          color: isCredit ? AppTheme.successGreen : AppTheme.errorRed,
-        ),
+      subtitle: Text(evidence, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 112),
+            child: Text(
+              amount,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                color: isCredit ? AppTheme.successGreen : AppTheme.errorRed,
+              ),
+            ),
+          ),
+          IconButton(
+            key: Key('dismiss-review-${parsed.id}'),
+            tooltip: 'Dismiss review item',
+            icon: const Icon(Icons.close_rounded),
+            color: AppTheme.textMuted,
+            onPressed: () => _dismissReviewTransaction(review),
+          ),
+        ],
       ),
       onTap: () => _openReviewTransaction(review),
     );

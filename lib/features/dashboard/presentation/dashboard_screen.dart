@@ -342,7 +342,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: AppTheme.primaryBlue.withOpacity(0.24),
+            color: AppTheme.primaryBlue.withValues(alpha: 0.24),
             blurRadius: 16,
             offset: const Offset(0, 8),
           ),
@@ -360,7 +360,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   'TOTAL BALANCE',
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1.2,
@@ -384,7 +384,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
+                    color: Colors.white.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: const Text(
@@ -412,7 +412,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Text(
             'Across ${_accountIdToNameMap.length} linked accounts',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.7),
+              color: Colors.white.withValues(alpha: 0.7),
               fontSize: 12,
               fontWeight: FontWeight.w500,
             ),
@@ -538,7 +538,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               dotData: const FlDotData(show: false),
                               belowBarData: BarAreaData(
                                 show: true,
-                                color: AppTheme.primaryBlue.withOpacity(0.08),
+                                color: AppTheme.primaryBlue.withValues(alpha: 0.08),
                               ),
                             ),
                           ],
@@ -714,7 +714,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       width: 44,
                       height: 44,
                       decoration: BoxDecoration(
-                        color: catColor.withOpacity(0.12),
+                        color: catColor.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Icon(
@@ -744,7 +744,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             vertical: 3,
                           ),
                           decoration: BoxDecoration(
-                            color: AppTheme.primaryBlue.withOpacity(0.06),
+                            color: AppTheme.primaryBlue.withValues(alpha: 0.06),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(

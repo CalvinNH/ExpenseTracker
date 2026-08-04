@@ -6,6 +6,7 @@ import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/event_matching.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/money.dart';
+import 'package:expense_tracker/core/models/parser_diagnostic.dart';
 import 'package:expense_tracker/core/models/parsed_financial_event.dart';
 import 'package:expense_tracker/core/models/raw_notification_event.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
@@ -75,19 +76,31 @@ class IngestionResult {
   final int? matchedLedgerEntryId;
 }
 
+class _RelatedEventLink {
+  const _RelatedEventLink({
+    required this.transactionGroupId,
+    required this.ledgerCategory,
+  });
+
+  final int transactionGroupId;
+  final String? ledgerCategory;
+}
+
 class NotificationIngestionProcessor {
   NotificationIngestionProcessor({
     AppDatabase? database,
     NotificationSourcePolicy? sourcePolicy,
-    InstitutionRegistry? institutionRegistry,
-    this.parserVersion = 1,
+    NotificationParsingPipeline? parsingPipeline,
+    this.institutionRegistry,
+    this.parserVersion = 2,
   }) : _database = database ?? AppDatabase.instance,
        _sourcePolicy = sourcePolicy ?? NotificationSourcePolicy(),
-       _institutionRegistry = institutionRegistry;
+       _parsingPipeline = parsingPipeline ?? NotificationParser.pipeline;
 
   final AppDatabase _database;
   final NotificationSourcePolicy _sourcePolicy;
-  final InstitutionRegistry? _institutionRegistry;
+  final NotificationParsingPipeline _parsingPipeline;
+  final InstitutionRegistry? institutionRegistry;
   static Future<InstitutionRegistry>? _defaultRegistry;
   final int parserVersion;
 
@@ -132,7 +145,7 @@ class NotificationIngestionProcessor {
       ),
     );
     final rawEvent = rawInsert.event;
-    final parsed = NotificationParser.pipeline.parse(
+    final parsed = _parsingPipeline.parse(
       envelope.title ?? '',
       envelope.content ?? '',
       sourcePackage: envelope.packageName,
@@ -143,18 +156,28 @@ class NotificationIngestionProcessor {
     final templateRoleSignature = _templateRoleSignature(parsed);
     final isCompletedValidatedParse =
         parsed.decision == ParseDecision.autoPost &&
+        parsed.relevance == FinancialRelevance.transaction &&
         parsed.status == FinancialEventStatus.completed &&
         parsed.selectedAmount != null &&
         parsed.direction != FinancialDirection.unknown &&
         parsed.direction != FinancialDirection.none;
-    final learnedTemplate = await _database.observeNotificationTemplate(
-      fingerprint: structuralTemplate.fingerprint,
-      sourcePackage: envelope.packageName,
-      fieldPositionMetadata: structuralTemplate.metadataJson,
-      roleSignature: templateRoleSignature,
-      successfulCompletedParse: isCompletedValidatedParse,
-      observedAt: envelope.ingestedAt,
-    );
+    // Replayed payloads are retained for audit, but they are not independent
+    // evidence and therefore cannot promote a learned template.
+    final learnedTemplate = !structuralTemplate.canBeLearned
+        ? null
+        : rawInsert.isExactDuplicate
+        ? await _database.getNotificationTemplate(
+            fingerprint: structuralTemplate.fingerprint,
+            sourcePackage: envelope.packageName,
+          )
+        : await _database.observeNotificationTemplate(
+            fingerprint: structuralTemplate.fingerprint,
+            sourcePackage: envelope.packageName,
+            fieldPositionMetadata: structuralTemplate.fieldPositionMetadata,
+            roleSignature: templateRoleSignature,
+            successfulCompletedParse: isCompletedValidatedParse,
+            observedAt: envelope.ingestedAt,
+          );
     if (parsed.selectedAmount == null ||
         parsed.direction == FinancialDirection.unknown) {
       final parsedId = await _database.createParsedFinancialEvent(
@@ -173,14 +196,25 @@ class NotificationIngestionProcessor {
           transactionOccurredAt: parsed.transactionTime ?? postedAt,
           overallConfidence: parsed.overallConfidence,
           fieldConfidence: parsed.fieldConfidence,
+          classificationMetadata: parsed.classification.metadataJson,
           parseDecision: parsed.decision,
           failureCode: parsed.failureCode ?? 'parser_no_match',
         ),
+      );
+      await _recordParserDiagnostic(
+        parsed: parsed,
+        sourceClass: sourceClass,
+        structuralFingerprint: structuralTemplate.fingerprint,
+        decision: parsed.decision,
+        confidence: parsed.overallConfidence,
+        failureCode: parsed.failureCode ?? 'parser_no_match',
+        observedAt: envelope.ingestedAt,
       );
       await _database.updateRawNotificationProcessingState(
         rawEvent.id!,
         RawNotificationProcessingState.failed,
       );
+      await _redactNonReviewRawPayloads();
       return IngestionResult(
         disposition: IngestionDisposition.retained,
         rawEventId: rawEvent.id,
@@ -191,7 +225,7 @@ class NotificationIngestionProcessor {
 
     final accounts = await _database.getAllAccounts();
     final registry =
-        _institutionRegistry ??
+        institutionRegistry ??
         await (_defaultRegistry ??= InstitutionRegistry.load());
     final resolution = AccountResolver(registry).resolve(
       accounts,
@@ -263,24 +297,31 @@ class NotificationIngestionProcessor {
     var effectiveConfidence = parsed.overallConfidence;
     // A promoted template is only a bounded confirmation of an already valid,
     // completed parse. It never changes field extraction or status semantics.
-    if (learnedTemplate.isPromoted &&
-        parsed.status == FinancialEventStatus.completed &&
-        parsed.selectedAmount != null &&
-        parsed.direction != FinancialDirection.unknown &&
-        parsed.direction != FinancialDirection.none) {
-      effectiveConfidence = (effectiveConfidence + .08)
+    if (learnedTemplate?.isPromoted ?? false) {
+      final canUseLearnedConfidence =
+          parsed.relevance == FinancialRelevance.transaction &&
+          parsed.status == FinancialEventStatus.completed &&
+          parsed.selectedAmount != null &&
+          parsed.direction != FinancialDirection.unknown &&
+          parsed.direction != FinancialDirection.none &&
+          (parsed.decision == ParseDecision.autoPost ||
+              parsed.decision == ParseDecision.provisional);
+      final boostedConfidence = (effectiveConfidence + .08)
           .clamp(0.0, .99)
           .toDouble();
-      final validation = DefaultParseValidator().validate(
-        relevance: parsed.relevance,
-        amount: parsed.selectedAmount,
-        direction: parsed.direction,
-        status: parsed.status,
-        overallConfidence: effectiveConfidence,
-      );
-      if (validation.decision == ParseDecision.autoPost) {
-        decision = ParseDecision.autoPost;
-        failureCode = null;
+      if (canUseLearnedConfidence) {
+        final validation = DefaultParseValidator().validate(
+          relevance: parsed.relevance,
+          amount: parsed.selectedAmount,
+          direction: parsed.direction,
+          status: parsed.status,
+          overallConfidence: boostedConfidence,
+        );
+        if (validation.decision == ParseDecision.autoPost) {
+          effectiveConfidence = boostedConfidence;
+          decision = ParseDecision.autoPost;
+          failureCode = null;
+        }
       }
     }
     final paymentRail = _inferPaymentRail(
@@ -377,6 +418,7 @@ class NotificationIngestionProcessor {
           ...parsed.fieldConfidence,
           'account': matchedAccount == null ? 0 : 0.9,
         },
+        classificationMetadata: parsed.classification.metadataJson,
         parseDecision: decision,
         failureCode: failureCode,
         ledgerDuplicateConfidence: duplicateAssessment.confidence,
@@ -385,6 +427,15 @@ class NotificationIngestionProcessor {
             .join(','),
       ),
     );
+    await _recordParserDiagnostic(
+      parsed: parsed,
+      sourceClass: sourceClass,
+      structuralFingerprint: structuralTemplate.fingerprint,
+      decision: decision,
+      confidence: effectiveConfidence,
+      failureCode: failureCode,
+      observedAt: envelope.ingestedAt,
+    );
 
     if (duplicateAssessment.isDefinitive) {
       await _database.linkParsedEventToLedger(
@@ -392,23 +443,57 @@ class NotificationIngestionProcessor {
         ledgerEntryId: duplicateAssessment.matchedId!,
         assessment: duplicateAssessment,
       );
-      await _linkRelatedEvent(
-        parsedFinancialEventId: parsedId,
-        eventType: parsed.eventType,
-        status: parsed.status,
-        direction: parsed.direction,
-        accountId: matchedAccount!.id!,
-        amountMinor: parsed.selectedAmount!.amountMinor,
-        merchant: parsed.merchant.normalized,
-        category: transactionCategory,
-        reference: parsed.referenceNumber,
-        occurredAt: parsed.transactionTime ?? postedAt,
-        sourcePackage: envelope.packageName,
+      final existingGroupId = await _database
+          .getTransactionGroupIdForLedgerEntry(duplicateAssessment.matchedId!);
+      final existingGroup = existingGroupId == null
+          ? null
+          : await _database.getTransactionGroup(existingGroupId);
+      final existingLedgerCategory =
+          parsed.eventType == FinancialEventType.refund &&
+              duplicateAssessment.confidence >= .85
+          ? existingGroup?.category?.toLowerCase() == 'salary'
+                ? null
+                : existingGroup?.category
+          : parsed.eventType == FinancialEventType.reversal
+          ? existingGroup?.category ?? transactionCategory
+          : transactionCategory;
+      final related = existingGroupId == null
+          ? await _linkRelatedEvent(
+              parsedFinancialEventId: parsedId,
+              eventType: parsed.eventType,
+              status: parsed.status,
+              direction: parsed.direction,
+              accountId: matchedAccount!.id!,
+              amountMinor: parsed.selectedAmount!.amountMinor,
+              merchant: parsed.merchant.normalized,
+              category: transactionCategory,
+              reference: parsed.referenceNumber,
+              occurredAt: parsed.transactionTime ?? postedAt,
+              sourcePackage: envelope.packageName,
+              applyLifecycleEffects: false,
+            )
+          : _RelatedEventLink(
+              transactionGroupId: existingGroupId,
+              ledgerCategory: existingLedgerCategory,
+            );
+      if (existingGroupId != null) {
+        await _database.linkParsedEventToGroup(
+          parsedFinancialEventId: parsedId,
+          transactionGroupId: existingGroupId,
+          assessment: duplicateAssessment,
+        );
+      }
+      await _database.updateLedgerLifecycle(
+        ledgerEntryId: duplicateAssessment.matchedId!,
+        transactionGroupId: related.transactionGroupId,
+        eventRole: _ledgerEventRoleFor(parsed.eventType),
+        category: related.ledgerCategory,
       );
       await _database.updateRawNotificationProcessingState(
         rawEvent.id!,
         RawNotificationProcessingState.parsed,
       );
+      await _redactNonReviewRawPayloads();
       return IngestionResult(
         disposition: disposition,
         rawEventId: rawEvent.id,
@@ -444,6 +529,7 @@ class NotificationIngestionProcessor {
         rawEvent.id!,
         RawNotificationProcessingState.parsed,
       );
+      await _redactNonReviewRawPayloads();
       return IngestionResult(
         disposition: disposition,
         rawEventId: rawEvent.id,
@@ -452,20 +538,7 @@ class NotificationIngestionProcessor {
       );
     }
 
-    final transactionId = await _database.postIngestedTransaction(
-      transaction: Transaction(
-        amount: minorToMajor(parsed.selectedAmount!.amountMinor),
-        type: parsed.direction == FinancialDirection.credit
-            ? TransactionType.credit
-            : TransactionType.debit,
-        timestamp: parsed.transactionTime ?? postedAt,
-        merchant: parsed.merchant.raw ?? 'Unknown',
-        category: transactionCategory,
-        accountId: matchedAccount.id!,
-      ),
-      parsedFinancialEventId: parsedId,
-    );
-    await _linkRelatedEvent(
+    final related = await _linkRelatedEvent(
       parsedFinancialEventId: parsedId,
       eventType: parsed.eventType,
       status: parsed.status,
@@ -478,10 +551,28 @@ class NotificationIngestionProcessor {
       occurredAt: parsed.transactionTime ?? postedAt,
       sourcePackage: envelope.packageName,
     );
+    final postedCategory = related.ledgerCategory ?? 'Uncategorized';
+    final transactionId = await _database.postIngestedTransaction(
+      transaction: Transaction(
+        amount: minorToMajor(parsed.selectedAmount!.amountMinor),
+        type: parsed.direction == FinancialDirection.credit
+            ? TransactionType.credit
+            : TransactionType.debit,
+        timestamp: parsed.transactionTime ?? postedAt,
+        merchant: parsed.merchant.raw ?? 'Unknown',
+        category: postedCategory,
+        accountId: matchedAccount.id!,
+      ),
+      parsedFinancialEventId: parsedId,
+      transactionGroupId: related.transactionGroupId,
+      eventRole: _ledgerEventRoleFor(parsed.eventType),
+      ledgerCategory: related.ledgerCategory,
+    );
     await _database.updateRawNotificationProcessingState(
       rawEvent.id!,
       RawNotificationProcessingState.posted,
     );
+    await _redactNonReviewRawPayloads();
     return IngestionResult(
       disposition: IngestionDisposition.posted,
       rawEventId: rawEvent.id,
@@ -490,13 +581,50 @@ class NotificationIngestionProcessor {
     );
   }
 
+  Future<void> _redactNonReviewRawPayloads() async {
+    try {
+      await _database.redactNonReviewRawNotificationPayloads();
+    } catch (_) {
+      // Cleanup must not turn an already committed ingestion into a failure.
+    }
+  }
+
+  Future<void> _recordParserDiagnostic({
+    required FinancialParseResult parsed,
+    required NotificationSourceClass sourceClass,
+    required String structuralFingerprint,
+    required ParseDecision decision,
+    required double confidence,
+    required String? failureCode,
+    required DateTime observedAt,
+  }) async {
+    try {
+      await _database.createParserDiagnostic(
+        ParserDiagnostic(
+          observedAt: observedAt,
+          parserVersion: parserVersion,
+          extractorsUsed: parsed.extractorsUsed,
+          decision: decision.name,
+          confidence: confidence,
+          failureCode: failureCode,
+          sourceCategory: sourceClass.name,
+          structuralFingerprint: ParserDiagnosticRedactor.redactFingerprint(
+            structuralFingerprint,
+          ),
+        ),
+      );
+    } catch (_) {
+      // Local diagnostics are best-effort and must never alter ledger state.
+    }
+  }
+
   bool _hasStrongTextualEvidence(String text) {
     final hasAmount = RegExp(
       r'(?:₹|rs\.?|inr)\s*[:\-]?\s*\d',
       caseSensitive: false,
     ).hasMatch(text);
     final hasAction = RegExp(
-      r'\b(debited|credited|spent|paid|received|withdrawn|deposited|refund|cashback|transferred|transaction\s+of)\b',
+      r'\b(debited|credited|spent|paid|received|withdrawn|deposited|refund|refunded|reversal|reversed|cashback|transferred|transaction\s+of)\b',
       caseSensitive: false,
     ).hasMatch(text);
     final hasInstrumentOrReference = RegExp(
@@ -515,12 +643,14 @@ class NotificationIngestionProcessor {
           status == FinancialEventStatus.reversed);
 
   String _templateRoleSignature(FinancialParseResult parsed) {
-    final roles = parsed.amountCandidates
-        .map((candidate) => candidate.semanticRole.name)
-        .toSet()
-        .toList()
-      ..sort();
+    final roles =
+        parsed.amountCandidates
+            .map((candidate) => candidate.semanticRole.name)
+            .toSet()
+            .toList()
+          ..sort();
     return [
+      parsed.relevance.name,
       parsed.direction.name,
       parsed.status.name,
       parsed.eventType.name,
@@ -539,7 +669,15 @@ class NotificationIngestionProcessor {
     return null;
   }
 
-  Future<void> _linkRelatedEvent({
+  LedgerEventRole _ledgerEventRoleFor(FinancialEventType eventType) =>
+      switch (eventType) {
+        FinancialEventType.refund => LedgerEventRole.refund,
+        FinancialEventType.reversal => LedgerEventRole.reversal,
+        FinancialEventType.fee => LedgerEventRole.fee,
+        _ => LedgerEventRole.primary,
+      };
+
+  Future<_RelatedEventLink> _linkRelatedEvent({
     required int parsedFinancialEventId,
     required FinancialEventType eventType,
     required FinancialEventStatus status,
@@ -551,6 +689,7 @@ class NotificationIngestionProcessor {
     required String? reference,
     required DateTime occurredAt,
     required String sourcePackage,
+    bool applyLifecycleEffects = true,
   }) async {
     final incoming = RelatedFinancialEvent(
       eventType: eventType,
@@ -567,7 +706,8 @@ class NotificationIngestionProcessor {
       accountId:
           eventType == FinancialEventType.refund ||
               eventType == FinancialEventType.reversal ||
-              eventType == FinancialEventType.cashback
+              eventType == FinancialEventType.cashback ||
+              eventType == FinancialEventType.transfer
           ? null
           : accountId,
     );
@@ -597,8 +737,18 @@ class NotificationIngestionProcessor {
     int groupId;
     if (assessment.matchedId != null && !assessment.ambiguous) {
       groupId = assessment.matchedId!;
-      if (_hasSettledFinancialEffect(eventType, status)) {
-        final group = await _database.getTransactionGroup(groupId);
+      final group = await _database.getTransactionGroup(groupId);
+      String? ledgerCategory = category;
+      if (eventType == FinancialEventType.refund &&
+          assessment.confidence >= .85) {
+        ledgerCategory = group?.category?.toLowerCase() == 'salary'
+            ? null
+            : group?.category;
+      } else if (eventType == FinancialEventType.reversal) {
+        ledgerCategory = group?.category ?? category;
+      }
+      if (applyLifecycleEffects &&
+          _hasSettledFinancialEffect(eventType, status)) {
         if (group != null &&
             eventType == FinancialEventType.refund &&
             group.originalAmountMinor != null) {
@@ -618,15 +768,6 @@ class NotificationIngestionProcessor {
                 ? 'completed_refund_exceeds_refundable_amount'
                 : group.inconsistencyReason,
           );
-          if (assessment.confidence >= .85) {
-            final refundCategory = group.category?.toLowerCase() == 'salary'
-                ? null
-                : group.category;
-            await _database.updateLedgerCategoryForParsedEvent(
-              parsedFinancialEventId,
-              refundCategory,
-            );
-          }
         } else if (group != null && eventType == FinancialEventType.reversal) {
           await _database.updateTransactionGroupLifecycle(
             transactionGroupId: groupId,
@@ -651,10 +792,18 @@ class NotificationIngestionProcessor {
         transactionGroupId: groupId,
         assessment: assessment,
       );
-      return;
+      return _RelatedEventLink(
+        transactionGroupId: groupId,
+        ledgerCategory: ledgerCategory,
+      );
     }
 
     final now = DateTime.now().toUtc();
+    final ledgerCategory =
+        eventType == FinancialEventType.refund &&
+            category.toLowerCase() == 'salary'
+        ? null
+        : category;
     groupId = await _database.createTransactionGroup(
       TransactionGroup(
         groupType: transactionGroupTypeFor(
@@ -662,11 +811,7 @@ class NotificationIngestionProcessor {
           hasOriginalPurchase: false,
         ),
         merchantNormalized: merchant,
-        category:
-            eventType == FinancialEventType.refund &&
-                category.toLowerCase() == 'salary'
-            ? null
-            : category,
+        category: ledgerCategory,
         originalAmountMinor: direction == FinancialDirection.debit
             ? amountMinor
             : null,
@@ -694,6 +839,10 @@ class NotificationIngestionProcessor {
         confidence: 1,
         rationales: [MatchRationale.compatibleEventSequence],
       ),
+    );
+    return _RelatedEventLink(
+      transactionGroupId: groupId,
+      ledgerCategory: ledgerCategory,
     );
   }
 }

@@ -1,7 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
-import 'package:expense_tracker/core/services/notification_log_service.dart';
 import 'package:expense_tracker/core/services/reminder_notification_service.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/core/widgets/app_toast.dart';
@@ -21,6 +21,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _isReminderEnabled = false;
+  bool _isReminderUpdating = false;
   TimeOfDay _reminderTime = const TimeOfDay(hour: 21, minute: 0);
   bool? _isListenerConnected;
   bool _isReconnecting = false;
@@ -62,9 +63,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       initialTime: _reminderTime,
     );
     if (picked != null && mounted) {
-      setState(() => _reminderTime = picked);
-      await ReminderNotificationService.instance.setReminderTime(picked);
-      if (mounted) AppToast.show(context, 'Daily reminder time updated');
+      final updated = await ReminderNotificationService.instance
+          .setReminderTime(picked);
+      if (!mounted) return;
+      if (updated) {
+        setState(() => _reminderTime = picked);
+      }
+      AppToast.show(
+        context,
+        updated
+            ? 'Daily reminder time updated'
+            : 'Could not update the reminder time',
+      );
     }
   }
 
@@ -96,6 +106,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return value;
   }
 
+  Future<void> _deleteStaleCsvExports(Directory tempDirectory) async {
+    try {
+      await for (final entity in tempDirectory.list(followLinks: false)) {
+        final segments = entity.uri.pathSegments;
+        final name = segments.isEmpty ? '' : segments.last;
+        if (entity is File &&
+            name.startsWith('Expenses_Export_') &&
+            name.endsWith('.csv')) {
+          await entity.delete();
+        }
+      }
+    } catch (_) {
+      // Best-effort cleanup must not block an explicit user export.
+    }
+  }
+
   Future<void> _exportToCsv() async {
     File? tempFile;
     try {
@@ -120,39 +146,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
 
       final tempDir = await getTemporaryDirectory();
+      await _deleteStaleCsvExports(tempDir);
       final fileName =
           'Expenses_Export_${DateTime.now().millisecondsSinceEpoch}.csv';
-      tempFile = File('${tempDir.path}/$fileName');
+      tempFile = File('${tempDir.path}${Platform.pathSeparator}$fileName');
       await tempFile.writeAsString(buffer.toString());
 
-      try {
-        await Share.shareXFiles([
-          XFile(tempFile.path),
-        ], text: 'My Expenses Ledger Export');
-      } finally {
-        if (await tempFile.exists()) {
-          await tempFile.delete();
-        }
-      }
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(tempFile.path)],
+          text: 'My Expenses Ledger Export',
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       AppToast.show(context, 'Export failed: $e', isError: true);
+    } finally {
+      final file = tempFile;
+      if (file != null) {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
     }
   }
 
-  Future<void> _exportNotificationLogs() async {
+  Future<void> _exportParserDiagnostics() async {
+    File? tempFile;
     try {
-      await NotificationLogService.instance.exportLog();
-    } catch (e) {
-      if (!mounted) return;
-      AppToast.show(context, 'Failed to export logs: $e', isError: true);
-    }
-  }
-
-  Future<void> _clearNotificationLogs() async {
-    await NotificationLogService.instance.clearLog();
-    if (mounted) {
-      AppToast.show(context, 'Notification logs cleared');
+      final diagnostics = await AppDatabase.instance.getParserDiagnostics();
+      final payload = const JsonEncoder.withIndent('  ').convert({
+        'schemaVersion': 1,
+        'exportedAt': DateTime.now().toUtc().toIso8601String(),
+        'privacy': 'No raw notification text or extracted financial values',
+        'diagnostics': diagnostics
+            .map((diagnostic) => diagnostic.toExportMap())
+            .toList(growable: false),
+      });
+      final tempDir = await getTemporaryDirectory();
+      await for (final entity in tempDir.list(followLinks: false)) {
+        final segments = entity.uri.pathSegments;
+        final name = segments.isEmpty ? '' : segments.last;
+        if (entity is File &&
+            name.startsWith('Parser_Diagnostics_') &&
+            name.endsWith('.json')) {
+          await entity.delete();
+        }
+      }
+      final fileName =
+          'Parser_Diagnostics_${DateTime.now().millisecondsSinceEpoch}.json';
+      tempFile = File('${tempDir.path}${Platform.pathSeparator}$fileName');
+      await tempFile.writeAsString(payload, flush: true);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(tempFile.path)],
+          text: 'Redacted local parser diagnostics',
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        AppToast.show(context, 'Diagnostics export failed', isError: true);
+      }
+    } finally {
+      final file = tempFile;
+      if (file != null) {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
     }
   }
 
@@ -251,7 +312,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       width: 48,
                       height: 48,
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryBlue.withOpacity(0.12),
+                        color: AppTheme.primaryBlue.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(16),
                       ),
                       child: const Icon(
@@ -270,7 +331,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: const Padding(
                       padding: EdgeInsets.only(top: 4),
                       child: Text(
-                        'Choose a folder and save your transaction data',
+                        'Share a CSV copy using an app you choose',
                         style: TextStyle(
                           color: AppTheme.textMuted,
                           fontSize: 12,
@@ -282,6 +343,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       color: AppTheme.textMuted,
                     ),
                     onTap: _exportToCsv,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: AppTheme.cardShadow,
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.all(16),
+                    leading: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: AppTheme.successGreen.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(
+                        Icons.bug_report_outlined,
+                        color: AppTheme.successGreen,
+                      ),
+                    ),
+                    title: const Text(
+                      'Export Parser Diagnostics',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textDark,
+                        fontSize: 16,
+                      ),
+                    ),
+                    subtitle: const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Share redacted, value-free local parser decisions',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppTheme.textMuted,
+                    ),
+                    onTap: _exportParserDiagnostics,
                   ),
                 ),
               ),
@@ -313,7 +425,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       width: 48,
                       height: 48,
                       decoration: BoxDecoration(
-                        color: AppTheme.coralAccent.withOpacity(0.12),
+                        color: AppTheme.coralAccent.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(16),
                       ),
                       child: const Icon(
@@ -387,7 +499,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: 44,
                           height: 44,
                           decoration: BoxDecoration(
-                            color: AppTheme.primaryBlue.withOpacity(0.12),
+                            color: AppTheme.primaryBlue.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(14),
                           ),
                           child: const Icon(
@@ -414,19 +526,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                         ),
                         value: _isReminderEnabled,
-                        onChanged: (val) async {
-                          setState(() => _isReminderEnabled = val);
-                          await ReminderNotificationService.instance
-                              .setReminderEnabled(val);
-                          if (mounted) {
-                            AppToast.show(
-                              context,
-                              val
-                                  ? 'Daily reminder enabled'
-                                  : 'Daily reminder disabled',
-                            );
-                          }
-                        },
+                        onChanged: _isReminderUpdating
+                            ? null
+                            : (val) async {
+                                setState(() => _isReminderUpdating = true);
+                                final result = await ReminderNotificationService
+                                    .instance
+                                    .setReminderEnabled(val);
+                                if (!context.mounted) return;
+
+                                setState(() {
+                                  _isReminderUpdating = false;
+                                  if (result == ReminderUpdateResult.enabled) {
+                                    _isReminderEnabled = true;
+                                  } else if (result ==
+                                          ReminderUpdateResult.disabled ||
+                                      result ==
+                                          ReminderUpdateResult
+                                              .permissionDenied) {
+                                    _isReminderEnabled = false;
+                                  }
+                                });
+
+                                final message = switch (result) {
+                                  ReminderUpdateResult.enabled =>
+                                    'Daily reminder enabled',
+                                  ReminderUpdateResult.disabled =>
+                                    'Daily reminder disabled',
+                                  ReminderUpdateResult.permissionDenied =>
+                                    'Notification permission is required for reminders',
+                                  ReminderUpdateResult.failed =>
+                                    'Could not update the daily reminder',
+                                };
+                                AppToast.show(context, message);
+                              },
                       ),
                       if (_isReminderEnabled) ...[
                         const Divider(height: 1, indent: 16, endIndent: 16),
@@ -439,7 +572,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             width: 44,
                             height: 44,
                             decoration: BoxDecoration(
-                              color: AppTheme.successGreen.withOpacity(0.12),
+                              color: AppTheme.successGreen.withValues(
+                                alpha: 0.12,
+                              ),
                               borderRadius: BorderRadius.circular(14),
                             ),
                             child: const Icon(
@@ -507,8 +642,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           height: 48,
                           decoration: BoxDecoration(
                             color: (_isListenerConnected == true)
-                                ? AppTheme.successGreen.withOpacity(0.12)
-                                : AppTheme.errorRed.withOpacity(0.12),
+                                ? AppTheme.successGreen.withValues(alpha: 0.12)
+                                : AppTheme.errorRed.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: Icon(
@@ -560,7 +695,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: 48,
                           height: 48,
                           decoration: BoxDecoration(
-                            color: AppTheme.primaryBlue.withOpacity(0.12),
+                            color: AppTheme.primaryBlue.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: _isReconnecting
@@ -606,7 +741,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           width: 48,
                           height: 48,
                           decoration: BoxDecoration(
-                            color: AppTheme.coralAccent.withOpacity(0.12),
+                            color: AppTheme.coralAccent.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: const Icon(
@@ -638,84 +773,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         onTap: _openNotificationSettings,
                       ),
-                      const Divider(height: 1, indent: 16, endIndent: 16),
-                      ListTile(
-                        contentPadding: const EdgeInsets.all(16),
-                        leading: Container(
-                          width: 48,
-                          height: 48,
-                          decoration: BoxDecoration(
-                            color: AppTheme.warningAmber.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Icon(
-                            Icons.bug_report_rounded,
-                            color: AppTheme.warningAmber,
-                          ),
-                        ),
-                        title: const Text(
-                          'Export Notification Logs',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textDark,
-                            fontSize: 16,
-                          ),
-                        ),
-                        subtitle: const Padding(
-                          padding: EdgeInsets.only(top: 4),
-                          child: Text(
-                            'Share raw logs of all notification events for debugging',
-                            style: TextStyle(
-                              color: AppTheme.textMuted,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        trailing: const Icon(
-                          Icons.share_rounded,
-                          color: AppTheme.textMuted,
-                        ),
-                        onTap: _exportNotificationLogs,
-                      ),
-                      const Divider(height: 1, indent: 16, endIndent: 16),
-                      ListTile(
-                        contentPadding: const EdgeInsets.all(16),
-                        leading: Container(
-                          width: 48,
-                          height: 48,
-                          decoration: BoxDecoration(
-                            color: AppTheme.errorRed.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Icon(
-                            Icons.delete_sweep_rounded,
-                            color: AppTheme.errorRed,
-                          ),
-                        ),
-                        title: const Text(
-                          'Clear Notification Logs',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textDark,
-                            fontSize: 16,
-                          ),
-                        ),
-                        subtitle: const Padding(
-                          padding: EdgeInsets.only(top: 4),
-                          child: Text(
-                            'Delete all stored diagnostic log entries',
-                            style: TextStyle(
-                              color: AppTheme.textMuted,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        trailing: const Icon(
-                          Icons.chevron_right_rounded,
-                          color: AppTheme.textMuted,
-                        ),
-                        onTap: _clearNotificationLogs,
-                      ),
                     ],
                   ),
                 ),
@@ -729,7 +786,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Icon(
                       Icons.shield_outlined,
                       size: 24,
-                      color: AppTheme.primaryBlue.withOpacity(0.6),
+                      color: AppTheme.primaryBlue.withValues(alpha: 0.6),
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -746,7 +803,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       'Expense Tracker v1.0.1 (Build 2)',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: AppTheme.textMuted.withOpacity(0.7),
+                        color: AppTheme.textMuted.withValues(alpha: 0.7),
                         fontSize: 11,
                       ),
                     ),

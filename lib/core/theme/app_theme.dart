@@ -1,15 +1,25 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart';
 
 class AppTheme {
   AppTheme._();
 
-  static bool get _isTest =>
-      WidgetsBinding.instance.runtimeType.toString().contains('Test') ||
-      Platform.environment.containsKey('FLUTTER_TEST');
+  static const _interLicenseAsset = 'assets/fonts/inter/OFL.txt';
+  static bool _fontLicenseRegistered = false;
+
+  static void configureOfflineFonts() {
+    if (_fontLicenseRegistered) return;
+
+    _fontLicenseRegistered = true;
+    LicenseRegistry.addLicense(() async* {
+      final license = await rootBundle.loadString(_interLicenseAsset);
+      yield LicenseEntryWithLineBreaks(const <String>['Inter'], license);
+    });
+  }
 
   static TextTheme _buildTextTheme() {
+    configureOfflineFonts();
     const base = TextTheme(
       displayLarge: TextStyle(color: textDark, fontWeight: FontWeight.bold),
       titleLarge: TextStyle(color: textDark, fontWeight: FontWeight.bold),
@@ -18,22 +28,17 @@ class AppTheme {
       bodyMedium: TextStyle(color: textDark),
       bodySmall: TextStyle(color: textMuted),
     );
-    if (_isTest) return base;
-    return GoogleFonts.interTextTheme(base);
+    return base.apply(fontFamily: 'Inter');
   }
 
   static TextStyle _appBarTitleStyle() {
+    configureOfflineFonts();
     const base = TextStyle(
       color: textDark,
       fontSize: 20,
       fontWeight: FontWeight.bold,
     );
-    if (_isTest) return base;
-    return GoogleFonts.inter(
-      color: textDark,
-      fontSize: 20,
-      fontWeight: FontWeight.bold,
-    );
+    return base.copyWith(fontFamily: 'Inter');
   }
 
   // Colors
@@ -65,7 +70,7 @@ class AppTheme {
   // Shadows
   static final List<BoxShadow> cardShadow = [
     BoxShadow(
-      color: const Color(0xFF000000).withOpacity(0.04),
+      color: const Color(0xFF000000).withValues(alpha: 0.04),
       blurRadius: 12,
       offset: const Offset(0, 4),
     ),

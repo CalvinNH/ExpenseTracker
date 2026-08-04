@@ -1,10 +1,13 @@
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/financial_enums.dart';
+import 'package:expense_tracker/core/models/raw_notification_event.dart';
+import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/features/ingestion/notification_ingestion_processor.dart';
+import 'package:expense_tracker/features/ingestion/notification_parsing_pipeline.dart';
 import 'package:expense_tracker/features/ingestion/notification_source_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Transaction;
 
 void main() {
   final postedAt = DateTime.utc(2026, 7, 26, 8, 30);
@@ -96,10 +99,21 @@ void main() {
     );
 
     expect(result.disposition, IngestionDisposition.posted);
-    expect(
-      (await AppDatabase.instance.getAllRawNotificationEvents()),
-      hasLength(1),
+    final rawEvents = await AppDatabase.instance.getAllRawNotificationEvents();
+    expect(rawEvents, hasLength(1));
+    expect(rawEvents.single.title, isNull);
+    expect(rawEvents.single.content, isNull);
+    expect(rawEvents.single.payloadHash, isNotEmpty);
+    expect(rawEvents.single.packageName, 'com.example.default.sms');
+    expect(rawEvents.single.parserVersion, 2);
+    final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+      result.parsedFinancialEventId!,
     );
+    expect(
+      parsed?.classificationMetadata,
+      contains('"classifierId":"deterministic_semantic"'),
+    );
+    expect(parsed?.classificationMetadata, contains('"modelVersion":null'));
     final transactions = await AppDatabase.instance.getAllTransactions();
     expect(transactions, hasLength(1));
     expect(transactions.single.timestamp, postedAt);
@@ -114,6 +128,38 @@ void main() {
     expect(result.disposition, IngestionDisposition.posted);
     expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
   });
+
+  test(
+    'injected classifier provenance is stored but validation remains authoritative',
+    () async {
+      await createHdfcAccount();
+      final processor = NotificationIngestionProcessor(
+        parsingPipeline: NotificationParsingPipeline(
+          notificationClassifier: const _FixtureBundledClassifier(),
+        ),
+      );
+
+      final result = await processor.ingest(
+        envelope(
+          packageName: 'com.snapwork.hdfc',
+          content:
+              'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe failed.',
+        ),
+      );
+      final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+        result.parsedFinancialEventId!,
+      );
+
+      expect(result.disposition, IngestionDisposition.retained);
+      expect(parsed?.status, FinancialEventStatus.failed);
+      expect(parsed?.parseDecision, ParseDecision.retainOnly);
+      expect(
+        parsed?.classificationMetadata,
+        contains('"modelVersion":"fixture-model-v1"'),
+      );
+      expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+    },
+  );
 
   test('known wallet application is persisted and posted safely', () async {
     await AppDatabase.instance.createAccount(
@@ -164,65 +210,88 @@ void main() {
     expect(parsed!.parseDecision, ParseDecision.retainOnly);
   });
 
-  test('a reviewed retained event moves into the resolved transaction ledger',
-      () async {
-    final accountId = await AppDatabase.instance.createAccount(
-      Account(
-        displayName: 'Review account',
-        accountType: AccountType.bankAccount,
-        openingBalanceMinor: 100000,
-      ),
-    );
-    final result = await NotificationIngestionProcessor().ingest(
-      envelope(
-        packageName: 'com.unknown.sender',
-        content: 'Paid INR 100.00 at Cafe.',
-      ),
-    );
-    expect(result.disposition, IngestionDisposition.retained);
-    final reviews = await AppDatabase.instance.getTransactionsForReview();
-    expect(reviews, hasLength(1));
-    expect(reviews.single.suggestedOccurredAt, postedAt);
-    expect(reviews.single.parsedEvent.amountMinor, 10000);
+  test(
+    'a reviewed retained event moves into the resolved transaction ledger',
+    () async {
+      final accountId = await AppDatabase.instance.createAccount(
+        Account(
+          displayName: 'Review account',
+          accountType: AccountType.bankAccount,
+          openingBalanceMinor: 100000,
+        ),
+      );
+      final result = await NotificationIngestionProcessor().ingest(
+        envelope(
+          packageName: 'com.unknown.sender',
+          content: 'Paid INR 100.00 at Cafe.',
+        ),
+      );
+      expect(result.disposition, IngestionDisposition.retained);
+      final reviews = await AppDatabase.instance.getTransactionsForReview();
+      expect(reviews, hasLength(1));
+      expect(reviews.single.suggestedOccurredAt, postedAt);
+      expect(reviews.single.parsedEvent.amountMinor, 10000);
 
-    await AppDatabase.instance.resolveReviewedTransaction(
-      parsedFinancialEventId: reviews.single.parsedEvent.id!,
-      transaction: Transaction(
-        amount: 100,
-        type: TransactionType.debit,
-        timestamp: reviews.single.suggestedOccurredAt,
-        merchant: 'Cafe',
-        category: 'Food & Dining',
-        accountId: accountId,
-      ),
-    );
+      await AppDatabase.instance.resolveReviewedTransaction(
+        parsedFinancialEventId: reviews.single.parsedEvent.id!,
+        transaction: Transaction(
+          amount: 100,
+          type: TransactionType.debit,
+          timestamp: reviews.single.suggestedOccurredAt,
+          merchant: 'Cafe',
+          category: 'Food & Dining',
+          accountId: accountId,
+        ),
+      );
 
-    expect(await AppDatabase.instance.getTransactionsForReview(), isEmpty);
-    expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
-    expect(await AppDatabase.instance.getParsedEventLedgerLinks(), hasLength(1));
-  });
+      expect(await AppDatabase.instance.getTransactionsForReview(), isEmpty);
+      expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+      expect(
+        await AppDatabase.instance.getParsedEventLedgerLinks(),
+        hasLength(1),
+      );
+      final movements = await AppDatabase.instance.getAccountLedgerMovements();
+      expect(movements, hasLength(1));
+      expect(movements.single.entry.transactionGroupId, isNotNull);
+      expect(movements.single.entry.eventRole, LedgerEventRole.primary);
+      expect(
+        await AppDatabase.instance.getParsedEventGroupLinks(),
+        hasLength(1),
+      );
+      final summary = await AppDatabase.instance.getFinancialSummary();
+      expect(summary.grossExpensesMinor, 10000);
+      expect(summary.netExpensesMinor, 10000);
+      final raw = await AppDatabase.instance.getRawNotificationEvent(
+        result.rawEventId!,
+      );
+      expect(raw?.title, isNull);
+      expect(raw?.content, isNull);
+    },
+  );
 
-  test('shell-injected wallet notification with a transaction ID posts safely',
-      () async {
-    await AppDatabase.instance.createAccount(
-      Account(
-        displayName: 'Paytm Wallet',
-        institutionId: 'paytm_wallet',
-        accountType: AccountType.wallet,
-        openingBalanceMinor: 10000,
-      ),
-    );
-    final result = await NotificationIngestionProcessor().ingest(
-      envelope(
-        packageName: 'com.android.shell',
-        title: 'Paytm',
-        content: 'Paid Rs.160 to Tea Stall. Transaction ID: 2026072911',
-      ),
-    );
+  test(
+    'shell-injected wallet notification with a transaction ID posts safely',
+    () async {
+      await AppDatabase.instance.createAccount(
+        Account(
+          displayName: 'Paytm Wallet',
+          institutionId: 'paytm_wallet',
+          accountType: AccountType.wallet,
+          openingBalanceMinor: 10000,
+        ),
+      );
+      final result = await NotificationIngestionProcessor().ingest(
+        envelope(
+          packageName: 'com.android.shell',
+          title: 'Paytm',
+          content: 'Paid Rs.160 to Tea Stall. Transaction ID: 2026072911',
+        ),
+      );
 
-    expect(result.disposition, IngestionDisposition.posted);
-    expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
-  });
+      expect(result.disposition, IngestionDisposition.posted);
+      expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+    },
+  );
 
   test(
     'explicitly ignored package is rejected without raw persistence',
@@ -257,26 +326,237 @@ void main() {
     },
   );
 
-  test('parse failure is retained with its raw source evidence', () async {
+  test(
+    'non-transaction parse failure retains metadata but redacts text',
+    () async {
+      final result = await NotificationIngestionProcessor().ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          title: 'Delivery update',
+          content: 'Your parcel will arrive today.',
+        ),
+      );
+
+      expect(result.disposition, IngestionDisposition.retained);
+      final rawEvents = await AppDatabase.instance
+          .getAllRawNotificationEvents();
+      expect(rawEvents, hasLength(1));
+      expect(
+        rawEvents.single.processingState,
+        RawNotificationProcessingState.failed,
+      );
+      expect(rawEvents.single.title, isNull);
+      expect(rawEvents.single.content, isNull);
+      expect(rawEvents.single.payloadHash, isNotEmpty);
+      final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+        result.parsedFinancialEventId!,
+      );
+      expect(parsed!.failureCode, 'transaction_amount_missing');
+      expect(await AppDatabase.instance.getTransactionsForReview(), isEmpty);
+    },
+  );
+
+  test(
+    'transaction-like parse with missing amount is queued for review',
+    () async {
+      final result = await NotificationIngestionProcessor().ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          content: 'Your account was debited at Cafe.',
+        ),
+      );
+
+      expect(result.disposition, IngestionDisposition.retained);
+      final reviews = await AppDatabase.instance.getTransactionsForReview();
+      expect(reviews, hasLength(1));
+      expect(reviews.single.parsedEvent.amountMinor, isNull);
+      expect(reviews.single.rawEvent.content, contains('debited at Cafe'));
+    },
+  );
+
+  test(
+    'privacy cleanup preserves only text needed by pending review',
+    () async {
+      await NotificationIngestionProcessor().ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          content: 'Your account was debited at Cafe.',
+        ),
+      );
+      final historicalRawId = await AppDatabase.instance
+          .createRawNotificationEvent(
+            RawNotificationEvent(
+              packageName: 'com.example.historical',
+              title: 'Old transaction',
+              content: 'INR 99.00 paid at Old Store.',
+              postedAt: postedAt.subtract(const Duration(days: 30)),
+              ingestedAt: postedAt.subtract(const Duration(days: 30)),
+              payloadHash: 'historical-payload-hash',
+              parserVersion: 1,
+              processingState: RawNotificationProcessingState.posted,
+            ),
+          );
+
+      final redacted = await AppDatabase.instance
+          .redactNonReviewRawNotificationPayloads();
+
+      expect(redacted, 1);
+      final review =
+          (await AppDatabase.instance.getTransactionsForReview()).single;
+      expect(review.rawEvent.content, contains('debited at Cafe'));
+      final historical = await AppDatabase.instance.getRawNotificationEvent(
+        historicalRawId,
+      );
+      expect(historical?.title, isNull);
+      expect(historical?.content, isNull);
+      expect(historical?.payloadHash, 'historical-payload-hash');
+    },
+  );
+
+  test('dismissed review redacts text and cannot be posted', () async {
     final result = await NotificationIngestionProcessor().ingest(
       envelope(
         packageName: 'com.google.android.apps.messaging',
-        content: 'Your parcel will arrive today.',
+        content: 'Transaction INR 300 at Cinema completed.',
+      ),
+    );
+    final reviews = await AppDatabase.instance.getTransactionsForReview();
+    expect(reviews, hasLength(1));
+
+    await AppDatabase.instance.dismissReviewedTransaction(
+      reviews.single.parsedEvent.id!,
+    );
+
+    expect(await AppDatabase.instance.getTransactionsForReview(), isEmpty);
+    final raw =
+        (await AppDatabase.instance.getAllRawNotificationEvents()).single;
+    expect(raw.processingState, RawNotificationProcessingState.ignored);
+    expect(raw.title, isNull);
+    expect(raw.content, isNull);
+    expect(raw.payloadHash, isNotEmpty);
+    await expectLater(
+      AppDatabase.instance.resolveReviewedTransaction(
+        parsedFinancialEventId: result.parsedFinancialEventId!,
+        transaction: Transaction(
+          amount: 300,
+          type: TransactionType.debit,
+          timestamp: postedAt,
+          merchant: 'Cinema',
+          category: 'Others',
+          accountId: 1,
+        ),
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+    expect(await AppDatabase.instance.getAccountLedgerMovements(), isEmpty);
+  });
+
+  test('reviewed refund uses refund lifecycle instead of income', () async {
+    final result = await NotificationIngestionProcessor().ingest(
+      envelope(
+        packageName: 'com.google.android.apps.messaging',
+        content: 'Refund INR 100.00 credited from Cafe. Ref REVIEWREFUND123.',
+      ),
+    );
+    expect(result.disposition, IngestionDisposition.provisional);
+    final review =
+        (await AppDatabase.instance.getTransactionsForReview()).single;
+    final accountId = await AppDatabase.instance.createAccount(
+      Account(
+        displayName: 'Review destination',
+        accountType: AccountType.bankAccount,
       ),
     );
 
-    expect(result.disposition, IngestionDisposition.retained);
-    final rawEvents = await AppDatabase.instance.getAllRawNotificationEvents();
-    expect(rawEvents, hasLength(1));
-    expect(
-      rawEvents.single.processingState,
-      RawNotificationProcessingState.failed,
+    await AppDatabase.instance.resolveReviewedTransaction(
+      parsedFinancialEventId: review.parsedEvent.id!,
+      transaction: Transaction(
+        amount: 100,
+        type: TransactionType.credit,
+        timestamp: postedAt,
+        merchant: 'Cafe',
+        category: 'Food & Dining',
+        accountId: accountId,
+      ),
     );
-    final parsed = await AppDatabase.instance.getParsedFinancialEvent(
-      result.parsedFinancialEventId!,
+
+    final movement =
+        (await AppDatabase.instance.getAccountLedgerMovements()).single;
+    expect(movement.entry.eventRole, LedgerEventRole.refund);
+    expect(movement.entry.transactionGroupId, isNotNull);
+    final group = await AppDatabase.instance.getTransactionGroup(
+      movement.entry.transactionGroupId!,
     );
-    expect(parsed!.failureCode, 'transaction_amount_missing');
+    expect(group?.completedRefundAmountMinor, 10000);
+    expect(group?.netExpenseMinor, -10000);
+    expect(group?.isInconsistent, isTrue);
+    final summary = await AppDatabase.instance.getFinancialSummary();
+    expect(summary.grossExpensesMinor, 0);
+    expect(summary.completedRefundsMinor, 10000);
+    expect(summary.netExpensesMinor, -10000);
+    expect(summary.incomeMinor, 0);
   });
+
+  test(
+    'reviewed refund with the same reference updates its purchase group',
+    () async {
+      final accountId = await createHdfcAccount();
+      final processor = NotificationIngestionProcessor();
+      await processor.ingest(
+        envelope(
+          packageName: 'com.snapwork.hdfc',
+          content:
+              'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. Ref REVIEWLINK123.',
+        ),
+      );
+      final refund = await processor.ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          notificationId: 88,
+          eventTime: postedAt.add(const Duration(days: 1)),
+          content: 'Refund INR 100.00 credited from Cafe. Ref REVIEWLINK123.',
+        ),
+      );
+      expect(refund.disposition, IngestionDisposition.provisional);
+      final review =
+          (await AppDatabase.instance.getTransactionsForReview()).single;
+
+      await AppDatabase.instance.resolveReviewedTransaction(
+        parsedFinancialEventId: review.parsedEvent.id!,
+        transaction: Transaction(
+          amount: 100,
+          type: TransactionType.credit,
+          timestamp: postedAt.add(const Duration(days: 1)),
+          merchant: 'Cafe',
+          category: 'Food & Dining',
+          accountId: accountId,
+        ),
+      );
+
+      final movements = await AppDatabase.instance.getAccountLedgerMovements();
+      expect(movements, hasLength(2));
+      expect(
+        movements.map((movement) => movement.entry.transactionGroupId).toSet(),
+        hasLength(1),
+      );
+      expect(movements.map((movement) => movement.entry.eventRole).toSet(), {
+        LedgerEventRole.primary,
+        LedgerEventRole.refund,
+      });
+      final group = await AppDatabase.instance.getTransactionGroup(
+        movements.first.entry.transactionGroupId!,
+      );
+      expect(group?.groupType, TransactionGroupType.purchaseRefund);
+      expect(group?.completedRefundAmountMinor, 10000);
+      expect(group?.netExpenseMinor, 0);
+      final summary = await AppDatabase.instance.getFinancialSummary();
+      expect(summary.grossExpensesMinor, 10000);
+      expect(summary.completedRefundsMinor, 10000);
+      expect(summary.netExpensesMinor, 0);
+      expect(summary.incomeMinor, 0);
+    },
+  );
 
   test('identical notification is not processed twice', () async {
     await createHdfcAccount();
@@ -436,6 +716,21 @@ void main() {
     expect(group?.completedRefundAmountMinor, 10000);
     expect(group?.netExpenseMinor, 0);
     expect(group?.category?.toLowerCase(), isNot('salary'));
+    final movements = await AppDatabase.instance.getAccountLedgerMovements();
+    expect(movements, hasLength(2));
+    expect(
+      movements.map((movement) => movement.entry.transactionGroupId).toSet(),
+      {group!.id},
+    );
+    expect(movements.map((movement) => movement.entry.eventRole).toSet(), {
+      LedgerEventRole.primary,
+      LedgerEventRole.refund,
+    });
+    final summary = await AppDatabase.instance.getFinancialSummary();
+    expect(summary.grossExpensesMinor, 10000);
+    expect(summary.completedRefundsMinor, 10000);
+    expect(summary.netExpensesMinor, 0);
+    expect(summary.incomeMinor, 0);
     expect(
       await AppDatabase.instance.getParsedFinancialEvent(
         purchase.parsedFinancialEventId!,
@@ -479,32 +774,152 @@ void main() {
       hasLength(2),
     );
     expect(await AppDatabase.instance.getParsedEventGroupLinks(), hasLength(2));
+    expect(await AppDatabase.instance.getTransactionsForReview(), isEmpty);
   });
 
-  test('a settled reversal posts the credit movement instead of being retained',
-      () async {
+  test(
+    'a settled reversal posts the credit movement instead of being retained',
+    () async {
+      await createHdfcAccount();
+      final processor = NotificationIngestionProcessor();
+      await processor.ingest(
+        envelope(
+          packageName: 'com.snapwork.hdfc',
+          content:
+              'INR 700.00 debited from HDFC Bank A/c XX1234 at Cafe. Ref: TXN/290711',
+        ),
+      );
+      final reversal = await processor.ingest(
+        envelope(
+          packageName: 'com.android.shell',
+          notificationId: 40,
+          content:
+              'INR 700.00 transaction at Cafe was reversed on card XX1234. Ref: TXN/290711',
+        ),
+      );
+
+      expect(reversal.disposition, IngestionDisposition.posted);
+      final transactions = await AppDatabase.instance.getAllTransactions();
+      expect(transactions, hasLength(2));
+      expect(transactions.map((transaction) => transaction.type).toSet(), {
+        TransactionType.debit,
+        TransactionType.credit,
+      });
+      final movements = await AppDatabase.instance.getAccountLedgerMovements();
+      expect(movements.map((movement) => movement.entry.eventRole).toSet(), {
+        LedgerEventRole.primary,
+        LedgerEventRole.reversal,
+      });
+      expect(
+        movements.map((movement) => movement.entry.transactionGroupId).toSet(),
+        hasLength(1),
+      );
+      final summary = await AppDatabase.instance.getFinancialSummary();
+      expect(summary.grossExpensesMinor, 0);
+      expect(summary.completedRefundsMinor, 0);
+      expect(summary.netExpensesMinor, 0);
+      expect(summary.incomeMinor, 0);
+    },
+  );
+
+  test('notification fees, cashback, and transfers use lifecycle roles', () async {
+    await createHdfcAccount();
+    final processor = NotificationIngestionProcessor();
+
+    final fee = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 51,
+        content:
+            'INR 10.00 fee debited from HDFC Bank A/c XX1234. Ref FEE123456',
+      ),
+    );
+    final cashback = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 52,
+        eventTime: postedAt.add(const Duration(minutes: 1)),
+        content:
+            'INR 25.00 cashback credited to HDFC Bank A/c XX1234. Ref CASH123456',
+      ),
+    );
+    final transfer = await processor.ingest(
+      envelope(
+        packageName: 'com.snapwork.hdfc',
+        notificationId: 53,
+        eventTime: postedAt.add(const Duration(minutes: 2)),
+        content:
+            'INR 500.00 transferred and debited from HDFC Bank A/c XX1234 via NEFT. Ref TRANSFER123',
+      ),
+    );
+
+    expect(fee.disposition, IngestionDisposition.posted);
+    expect(cashback.disposition, IngestionDisposition.posted);
+    expect(transfer.disposition, IngestionDisposition.posted);
+    final movements = await AppDatabase.instance.getAccountLedgerMovements();
+    expect(movements, hasLength(3));
+    expect(
+      movements.every((movement) => movement.entry.transactionGroupId != null),
+      isTrue,
+    );
+    expect(
+      movements.map((movement) => movement.entry.eventRole),
+      containsAll([LedgerEventRole.fee, LedgerEventRole.primary]),
+    );
+    expect(
+      movements
+          .where((movement) => movement.entry.amountMinor == 50000)
+          .single
+          .groupType,
+      TransactionGroupType.transfer,
+    );
+
+    final summary = await AppDatabase.instance.getFinancialSummary();
+    expect(summary.grossExpensesMinor, 0);
+    expect(summary.netExpensesMinor, 0);
+    expect(summary.incomeMinor, 0);
+    expect(summary.cashbackMinor, 2500);
+    expect(summary.feesMinor, 1000);
+    expect(summary.transfersMinor, 50000);
+  });
+
+  test('duplicate completed refund does not apply lifecycle twice', () async {
     await createHdfcAccount();
     final processor = NotificationIngestionProcessor();
     await processor.ingest(
       envelope(
         packageName: 'com.snapwork.hdfc',
+        notificationId: 61,
         content:
-            'INR 700.00 debited from HDFC Bank A/c XX1234 at Cafe. Ref: TXN/290711',
+            'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe. Ref ORDERDUP123',
       ),
     );
-    final reversal = await processor.ingest(
-      envelope(
-        packageName: 'com.android.shell',
-        notificationId: 40,
-        content:
-            'INR 700.00 transaction at Cafe was reversed on card XX1234. Ref: TXN/290711',
-      ),
+    final refundEnvelope = envelope(
+      packageName: 'com.snapwork.hdfc',
+      notificationId: 62,
+      eventTime: postedAt.add(const Duration(days: 1)),
+      content:
+          'Refund INR 100.00 credited to HDFC Bank A/c XX1234 from Cafe. Ref ORDERDUP123',
     );
+    final firstRefund = await processor.ingest(refundEnvelope);
+    final duplicateRefund = await processor.ingest(refundEnvelope);
 
-    expect(reversal.disposition, IngestionDisposition.posted);
-    final transactions = await AppDatabase.instance.getAllTransactions();
-    expect(transactions, hasLength(2));
-    expect(transactions.first.type, TransactionType.credit);
+    expect(firstRefund.disposition, IngestionDisposition.posted);
+    expect(duplicateRefund.disposition, IngestionDisposition.sourceDuplicate);
+    expect(await AppDatabase.instance.getAllTransactions(), hasLength(2));
+    final groupLinks = await AppDatabase.instance.getParsedEventGroupLinks();
+    final groupIds = groupLinks
+        .map((link) => link['transaction_group_id'] as int)
+        .toSet();
+    expect(groupIds, hasLength(1));
+    final group = await AppDatabase.instance.getTransactionGroup(
+      groupIds.single,
+    );
+    expect(group?.completedRefundAmountMinor, 10000);
+    expect(group?.netExpenseMinor, 0);
+    final summary = await AppDatabase.instance.getFinancialSummary();
+    expect(summary.completedRefundsMinor, 10000);
+    expect(summary.netExpensesMinor, 0);
   });
 
   test(
@@ -556,4 +971,24 @@ void main() {
     );
     expect(parsed!.parseDecision, ParseDecision.provisional);
   });
+}
+
+class _FixtureBundledClassifier implements FinancialNotificationClassifier {
+  const _FixtureBundledClassifier();
+
+  @override
+  ClassificationResult classify(NormalizedNotification notification) {
+    return const ClassificationResult(
+      relevance: FinancialRelevance.transaction,
+      confidence: .97,
+      features: {
+        FinancialNotificationSemanticFeature.transactionAction,
+        FinancialNotificationSemanticFeature.currencyAmount,
+      },
+      classifierId: 'fixture_bundled_classifier',
+      classifierVersion: '1',
+      kind: FinancialNotificationClassifierKind.bundledModel,
+      modelVersion: 'fixture-model-v1',
+    );
+  }
 }

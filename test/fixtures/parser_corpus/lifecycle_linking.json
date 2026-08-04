@@ -1,0 +1,8 @@
+[
+  {"id":"purchase_original","sequence":"refund","sourcePackage":"com.snapwork.hdfc","notificationId":81,"title":"HDFC Bank","content":"INR 500 debited from account XX1234 at ZOMATO Ref LIFE123456","expectedDisposition":"posted"},
+  {"id":"purchase_duplicate","sequence":"refund","sourcePackage":"com.snapwork.hdfc","notificationId":82,"title":"HDFC Bank","content":"INR 500 debited from account XX1234 at ZOMATO Ref LIFE123456","expectedDisposition":"sourceDuplicate"},
+  {"id":"refund_pending","sequence":"refund","sourcePackage":"com.snapwork.hdfc","notificationId":83,"title":"HDFC Bank","content":"Refund initiated for INR 500 to account XX1234 from ZOMATO Ref LIFE123456","expectedDisposition":"retained"},
+  {"id":"refund_complete","sequence":"refund","sourcePackage":"com.snapwork.hdfc","notificationId":84,"title":"HDFC Bank","content":"Refunded INR 500 to account XX1234 from ZOMATO Ref LIFE123456","expectedDisposition":"posted"},
+  {"id":"reversal_original","sequence":"reversal","sourcePackage":"com.axis.mobile","notificationId":91,"title":"Axis Bank","content":"INR 275 debited from account XX9876 at UBER Ref REV123456","expectedDisposition":"posted"},
+  {"id":"reversal_complete","sequence":"reversal","sourcePackage":"com.axis.mobile","notificationId":92,"title":"Axis Bank","content":"INR 275 debited from account XX9876 at UBER was reversed Ref REV123456","expectedDisposition":"posted"}
+]

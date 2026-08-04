@@ -28,9 +28,16 @@ class NotificationService {
       StreamController<void>.broadcast();
   static Stream<void> get onTransactionIngested =>
       _onTransactionIngested.stream;
+  static final StreamController<void> _onReviewInboxChanged =
+      StreamController<void>.broadcast();
+  static Stream<void> get onReviewInboxChanged => _onReviewInboxChanged.stream;
 
   static void notifyTransactionIngested() {
     _onTransactionIngested.add(null);
+  }
+
+  static void notifyReviewInboxChanged() {
+    _onReviewInboxChanged.add(null);
   }
 
   static String extractBankCode(String bankName) {
@@ -86,11 +93,8 @@ class NotificationService {
         rebindSuccess = true;
         await _nlog.log('RECONNECT', 'forceRequestRebind succeeded.');
       }
-    } catch (e) {
-      await _nlog.log(
-        'RECONNECT',
-        'forceRequestRebind not supported or failed: $e',
-      );
+    } catch (error) {
+      await _nlog.logError('RECONNECT_REBIND', '$error');
     }
 
     // 2. Try component toggle (DISABLED -> ENABLED)
@@ -311,6 +315,9 @@ class NotificationService {
       );
       if (result.disposition == IngestionDisposition.posted) {
         _onTransactionIngested.add(null);
+      } else if (result.disposition == IngestionDisposition.retained ||
+          result.disposition == IngestionDisposition.provisional) {
+        _onReviewInboxChanged.add(null);
       }
     } catch (e, stackTrace) {
       await _nlog.logError(

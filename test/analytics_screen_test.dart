@@ -2,6 +2,7 @@ import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/features/analytics/presentation/analytics_screen.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Transaction;
@@ -90,6 +91,30 @@ void main() {
       // Verify category legend info
       expect(find.text('Food & Dining'), findsOneWidget);
       expect(find.text('Shopping'), findsOneWidget);
+
+      // Verify the category visualization itself, including the values passed
+      // to fl_chart rather than only the surrounding legend labels.
+      expect(find.byType(PieChart), findsOneWidget);
+      var pieChart = tester.widget<PieChart>(find.byType(PieChart));
+      expect(pieChart.data.sections, hasLength(2));
+      expect(
+        pieChart.data.sections.map((section) => section.value),
+        orderedEquals(<double>[4500, 1200]),
+      );
+
+      // The alternate tab owns a separate pie-chart data path. Exercise it so
+      // dependency migrations cannot leave one visualization broken.
+      await tester.tap(find.text('Accounts'));
+      await tester.pump();
+
+      expect(find.byType(PieChart), findsOneWidget);
+      pieChart = tester.widget<PieChart>(find.byType(PieChart));
+      expect(pieChart.data.sections, hasLength(2));
+      expect(
+        pieChart.data.sections.map((section) => section.value),
+        orderedEquals(<double>[4500, 1200]),
+      );
+      expect(tester.takeException(), isNull);
     },
   );
 

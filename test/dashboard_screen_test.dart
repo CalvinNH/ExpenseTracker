@@ -4,6 +4,7 @@ import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/transaction.dart';
 import 'package:expense_tracker/core/services/financial_lifecycle_service.dart';
 import 'package:expense_tracker/features/dashboard/presentation/dashboard_screen.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Transaction;
@@ -138,8 +139,9 @@ void main() {
     },
   );
 
-  testWidgets('Dashboard shows gross, refunds and net separately',
-      (WidgetTester tester) async {
+  testWidgets('Dashboard shows gross, refunds and net separately', (
+    WidgetTester tester,
+  ) async {
     final accountId = await AppDatabase.instance.createAccount(
       Account(bankName: 'SBI', currentBalance: 5000),
     );
@@ -171,5 +173,13 @@ void main() {
     expect(find.text('Gross ₹1000'), findsOneWidget);
     expect(find.text('Refunds ₹400'), findsOneWidget);
     expect(find.text('₹ 600.00'), findsOneWidget);
+
+    expect(find.byType(LineChart), findsOneWidget);
+    final lineChart = tester.widget<LineChart>(find.byType(LineChart));
+    expect(lineChart.data.lineBarsData, hasLength(1));
+    final spots = lineChart.data.lineBarsData.single.spots;
+    expect(spots, isNotEmpty);
+    expect(spots.last.y, 600);
+    expect(tester.takeException(), isNull);
   });
 }

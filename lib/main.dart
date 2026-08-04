@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:expense_tracker/app_shell.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/security/app_lock_gate.dart';
+import 'package:expense_tracker/core/services/notification_log_service.dart';
 import 'package:expense_tracker/core/services/reminder_notification_service.dart';
 import 'package:expense_tracker/core/theme/app_theme.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
@@ -11,6 +12,7 @@ import 'package:flutter/material.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  AppTheme.configureOfflineFonts();
   ReminderNotificationService.instance.initialize();
   runApp(const ExpenseTrackerApp());
 }
@@ -49,7 +51,10 @@ class _AppEntryState extends State<_AppEntry> {
   }
 
   Future<Widget> _resolveInitialScreen() async {
-    final accounts = await AppDatabase.instance.getAllAccounts();
+    final database = AppDatabase.instance;
+    final accounts = await database.getAllAccounts();
+    await database.redactNonReviewRawNotificationPayloads();
+    await NotificationLogService.instance.enforcePrivacyPolicy();
     // Do not let notification ingestion race encryption migration or schema
     // validation during cold start.
     unawaited(NotificationService.initialize(forceRequest: false));

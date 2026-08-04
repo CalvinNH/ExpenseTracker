@@ -331,7 +331,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         borderRadius: BorderRadius.circular(24),
                         boxShadow: [
                           BoxShadow(
-                            color: AppTheme.primaryBlue.withOpacity(0.24),
+                            color: AppTheme.primaryBlue.withValues(alpha: 0.24),
                             blurRadius: 16,
                             offset: const Offset(0, 8),
                           ),
@@ -347,7 +347,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                               Text(
                                 'NET SPENT',
                                 style: TextStyle(
-                                  color: Colors.white.withOpacity(0.7),
+                                  color: Colors.white.withValues(alpha: 0.7),
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
                                   letterSpacing: 1.2,
@@ -389,7 +389,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                                 vertical: 4,
                               ),
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.15),
+                                color: Colors.white.withValues(alpha: 0.15),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
@@ -424,7 +424,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       height: 48,
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFE5E7EB).withOpacity(0.5),
+                        color: const Color(0xFFE5E7EB).withValues(alpha: 0.5),
                         borderRadius: BorderRadius.circular(24),
                       ),
                       child: Row(
@@ -925,12 +925,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
               // Icon selector
               IconData accIcon = Icons.account_balance_wallet_rounded;
-              Color iconBg = AppTheme.primaryBlue.withOpacity(0.12);
+              Color iconBg = AppTheme.primaryBlue.withValues(alpha: 0.12);
               Color iconColor = AppTheme.primaryBlue;
 
               if (accType == 'Credit Card') {
                 accIcon = Icons.credit_card_rounded;
-                iconBg = const Color(0xFF6B7280).withOpacity(0.12);
+                iconBg = const Color(0xFF6B7280).withValues(alpha: 0.12);
                 iconColor = const Color(0xFF4B5563);
               }
 
@@ -1068,7 +1068,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                           width: 48,
                           height: 48,
                           decoration: BoxDecoration(
-                            color: catColor.withOpacity(0.12),
+                            color: catColor.withValues(alpha: 0.12),
                             shape: BoxShape.circle,
                           ),
                           child: Icon(
@@ -1146,7 +1146,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               Icon(
                 Icons.insights_rounded,
                 size: 48,
-                color: AppTheme.textMuted.withOpacity(0.5),
+                color: AppTheme.textMuted.withValues(alpha: 0.5),
               ),
               const SizedBox(height: 12),
               const Text(

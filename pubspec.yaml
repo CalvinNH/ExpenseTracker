@@ -38,13 +38,14 @@ dependencies:
   sqflite: ^2.3.0
   flutter_secure_storage: ^10.2.0
   path: ^1.9.0
+  collection: ^1.19.1
   notification_listener_service: ^1.0.0
-  fl_chart: ^0.68.0
+  fl_chart: ^1.2.0
   path_provider: ^2.1.2
-  share_plus: ^7.2.1
-  google_fonts: ^6.1.0
-  local_auth: ^2.3.0
-  flutter_local_notifications: ^17.0.0
+  share_plus: ^13.3.0
+  local_auth: ^3.0.2
+  flutter_local_notifications: ^22.2.0
+  timezone: ^0.11.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -78,6 +79,17 @@ flutter:
     - assets/icon/account_card.png
     - assets/icon/account_cash.png
     - assets/data/institutions_v1.json
+    - assets/fonts/inter/OFL.txt
+
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/inter/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/inter/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/inter/Inter-Bold.ttf
+          weight: 700
 
   # To add assets to your application, add an assets section, like this:
   # assets:

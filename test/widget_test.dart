@@ -93,11 +93,16 @@ void main() {
     // Build our app and trigger a frame.
     await tester.pumpWidget(const ExpenseTrackerApp());
 
-    // Resolve initial FutureBuilder logic
-    await tester.runAsync(() async {
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-    });
-    await tester.pump();
+    // Resolve the encrypted database initialization and startup privacy
+    // cleanup without relying on a single machine-speed-dependent delay.
+    for (var attempt = 0;
+        attempt < 20 && find.byType(OnboardingScreen).evaluate().isEmpty;
+        attempt++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      });
+      await tester.pump();
+    }
 
     // Verify that onboarding screen shows the welcome message.
     expect(find.byType(OnboardingScreen), findsOneWidget);

@@ -9,6 +9,7 @@ import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/ledger_entry.dart';
 import 'package:expense_tracker/core/models/money.dart';
 import 'package:expense_tracker/core/models/notification_template.dart';
+import 'package:expense_tracker/core/models/parser_diagnostic.dart';
 import 'package:expense_tracker/core/models/parsed_financial_event.dart';
 import 'package:expense_tracker/core/models/raw_notification_event.dart';
 import 'package:expense_tracker/core/models/review_transaction.dart';
@@ -26,7 +27,7 @@ class AppDatabase {
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 8;
+  static const databaseVersion = 11;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -38,6 +39,7 @@ class AppDatabase {
   static const tableParsedEventLedgerLinks = 'parsed_event_ledger_links';
   static const tableParsedEventGroupLinks = 'parsed_event_group_links';
   static const tableNotificationTemplates = 'notification_templates';
+  static const tableParserDiagnostics = 'parser_diagnostics';
 
   Database? _database;
   Future<Database>? _databaseFuture;
@@ -173,6 +175,7 @@ class AppDatabase {
     await _createVersion2Schema(db);
     await _createAccountMergesTable(db);
     await _createNotificationTemplatesTable(db);
+    await _createParserDiagnosticsTable(db);
   }
 
   Future<void> _createVersion2Schema(Database db) async {
@@ -230,6 +233,12 @@ class AppDatabase {
           await _upgradeFrom6To7(db);
         case 7:
           await _createNotificationTemplatesTable(db);
+        case 8:
+          await _upgradeFrom8To9(db);
+        case 9:
+          await _upgradeFrom9To10(db);
+        case 10:
+          await _createParserDiagnosticsTable(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -305,7 +314,7 @@ class AppDatabase {
       final compact = Account.formatDisplayName(currentName, suffix);
       await db.update(
         tableAccounts,
-        {'display_name': compact, if (suffix != null) 'last_four': suffix},
+        {'display_name': compact, 'last_four': ?suffix},
         where: 'id = ?',
         whereArgs: [row['id']],
       );
@@ -468,21 +477,102 @@ class AppDatabase {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $tableNotificationTemplates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fingerprint TEXT NOT NULL,
-        source_package TEXT NOT NULL,
-        observed_count INTEGER NOT NULL,
-        successful_parse_count INTEGER NOT NULL,
-        conflicting_parse_count INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL CHECK(length(trim(fingerprint)) > 0),
+        source_package TEXT NOT NULL CHECK(length(trim(source_package)) > 0),
+        observed_count INTEGER NOT NULL CHECK(observed_count >= 1),
+        successful_parse_count INTEGER NOT NULL
+          CHECK(successful_parse_count >= 0 AND successful_parse_count <= observed_count),
+        conflicting_parse_count INTEGER NOT NULL
+          CHECK(conflicting_parse_count >= 0 AND conflicting_parse_count <= observed_count),
         last_observed TEXT NOT NULL,
         field_position_metadata TEXT NOT NULL,
-        is_promoted INTEGER NOT NULL DEFAULT 0 CHECK(is_promoted IN (0, 1)),
-        role_signature TEXT NOT NULL,
+        promotion_status TEXT NOT NULL DEFAULT 'learning'
+          CHECK(promotion_status IN ('learning', 'promoted', 'blocked')),
+        role_signature TEXT NOT NULL CHECK(length(trim(role_signature)) > 0),
         UNIQUE(fingerprint, source_package)
       )
     ''');
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_notification_templates_package '
-      'ON $tableNotificationTemplates (source_package, is_promoted)',
+      'ON $tableNotificationTemplates (source_package, promotion_status)',
+    );
+  }
+
+  Future<void> _upgradeFrom8To9(Database db) async {
+    final columns = await db.rawQuery(
+      'PRAGMA table_info($tableNotificationTemplates)',
+    );
+    if (columns.any((column) => column['name'] == 'promotion_status')) {
+      return;
+    }
+
+    const legacyTable = 'notification_templates_v8';
+    await db.execute('DROP INDEX IF EXISTS idx_notification_templates_package');
+    await db.execute(
+      'ALTER TABLE $tableNotificationTemplates RENAME TO $legacyTable',
+    );
+    await _createNotificationTemplatesTable(db);
+    await db.execute('''
+      INSERT INTO $tableNotificationTemplates (
+        id,
+        fingerprint,
+        source_package,
+        observed_count,
+        successful_parse_count,
+        conflicting_parse_count,
+        last_observed,
+        field_position_metadata,
+        promotion_status,
+        role_signature
+      )
+      SELECT
+        id,
+        fingerprint,
+        trim(source_package),
+        observed_count,
+        successful_parse_count,
+        conflicting_parse_count,
+        last_observed,
+        field_position_metadata,
+        CASE
+          WHEN conflicting_parse_count > 0 THEN 'blocked'
+          WHEN is_promoted = 1 THEN 'promoted'
+          ELSE 'learning'
+        END,
+        role_signature
+      FROM $legacyTable
+    ''');
+    await db.execute('DROP TABLE $legacyTable');
+  }
+
+  Future<void> _upgradeFrom9To10(Database db) async {
+    if (!await _tableExists(db, tableParsedFinancialEvents)) return;
+    await _addColumnIfMissing(
+      db,
+      tableParsedFinancialEvents,
+      'classification_metadata',
+      "TEXT NOT NULL DEFAULT '{}'",
+    );
+  }
+
+  Future<void> _createParserDiagnosticsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $tableParserDiagnostics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observed_at TEXT NOT NULL,
+        parser_version INTEGER NOT NULL CHECK(parser_version > 0),
+        extractors_used TEXT NOT NULL CHECK(length(extractors_used) > 2),
+        decision TEXT NOT NULL CHECK(length(trim(decision)) > 0),
+        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+        failure_code TEXT,
+        source_category TEXT NOT NULL CHECK(length(trim(source_category)) > 0),
+        structural_fingerprint TEXT NOT NULL
+          CHECK(length(structural_fingerprint) <= 2048)
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_parser_diagnostics_observed '
+      'ON $tableParserDiagnostics (observed_at DESC)',
     );
   }
 
@@ -529,6 +619,7 @@ class AppDatabase {
         transaction_occurred_at TEXT,
         overall_confidence REAL NOT NULL,
         field_confidence TEXT NOT NULL,
+        classification_metadata TEXT NOT NULL DEFAULT '{}',
         parse_decision TEXT NOT NULL,
         failure_code TEXT,
         ledger_duplicate_confidence REAL NOT NULL DEFAULT 0,
@@ -1319,51 +1410,80 @@ class AppDatabase {
   Future<NotificationTemplate> observeNotificationTemplate({
     required String fingerprint,
     required String sourcePackage,
-    required String fieldPositionMetadata,
+    required NotificationTemplateFieldMetadata fieldPositionMetadata,
     required String roleSignature,
     required bool successfulCompletedParse,
     required DateTime observedAt,
   }) async {
+    final normalizedFingerprint = fingerprint.trim();
+    final normalizedPackage = sourcePackage.trim();
+    _validateNotificationTemplateObservation(
+      fingerprint: normalizedFingerprint,
+      sourcePackage: normalizedPackage,
+      fieldPositionMetadata: fieldPositionMetadata,
+      roleSignature: roleSignature,
+    );
     final db = await database;
     return db.transaction((txn) async {
       final rows = await txn.query(
         tableNotificationTemplates,
         where: 'fingerprint = ? AND source_package = ?',
-        whereArgs: [fingerprint, sourcePackage],
+        whereArgs: [normalizedFingerprint, normalizedPackage],
         limit: 1,
       );
       if (rows.isEmpty) {
         final template = NotificationTemplate(
-          fingerprint: fingerprint,
-          sourcePackage: sourcePackage,
+          fingerprint: normalizedFingerprint,
+          sourcePackage: normalizedPackage,
           observedCount: 1,
           successfulParseCount: successfulCompletedParse ? 1 : 0,
           conflictingParseCount: 0,
           lastObserved: observedAt,
           fieldPositionMetadata: fieldPositionMetadata,
-          isPromoted: false,
+          promotionStatus: NotificationTemplatePromotionStatus.learning,
           roleSignature: roleSignature,
         );
-        final id = await txn.insert(tableNotificationTemplates, template.toMap());
+        final id = await txn.insert(
+          tableNotificationTemplates,
+          template.toMap(),
+        );
         return NotificationTemplate.fromMap({...template.toMap(), 'id': id});
       }
 
       final existing = NotificationTemplate.fromMap(rows.single);
-      final conflict = existing.roleSignature != roleSignature;
+      final conflict =
+          existing.roleSignature != roleSignature ||
+          existing.fieldPositionMetadata.canonicalJson !=
+              fieldPositionMetadata.canonicalJson;
       final observed = existing.observedCount + 1;
-      final successful = existing.successfulParseCount + (successfulCompletedParse ? 1 : 0);
+      final successful =
+          existing.successfulParseCount +
+          (successfulCompletedParse && !conflict ? 1 : 0);
       final conflicts = existing.conflictingParseCount + (conflict ? 1 : 0);
-      final promoted = observed >= 3 && successful >= 3 && conflicts == 0;
+      final promotionStatus =
+          existing.promotionStatus ==
+                  NotificationTemplatePromotionStatus.blocked ||
+              conflict
+          ? NotificationTemplatePromotionStatus.blocked
+          : observed >= NotificationTemplate.minimumObservationsForPromotion &&
+                successful >=
+                    NotificationTemplate.minimumObservationsForPromotion &&
+                conflicts == 0
+          ? NotificationTemplatePromotionStatus.promoted
+          : NotificationTemplatePromotionStatus.learning;
       final updated = NotificationTemplate(
         id: existing.id,
-        fingerprint: fingerprint,
-        sourcePackage: sourcePackage,
+        fingerprint: normalizedFingerprint,
+        sourcePackage: normalizedPackage,
         observedCount: observed,
         successfulParseCount: successful,
         conflictingParseCount: conflicts,
-        lastObserved: observedAt,
-        fieldPositionMetadata: fieldPositionMetadata,
-        isPromoted: promoted,
+        lastObserved: observedAt.isAfter(existing.lastObserved)
+            ? observedAt
+            : existing.lastObserved,
+        // Conflicting observations never overwrite the trusted field layout.
+        fieldPositionMetadata: existing.fieldPositionMetadata,
+        promotionStatus: promotionStatus,
         roleSignature: existing.roleSignature,
       );
       await txn.update(
@@ -1384,10 +1504,85 @@ class AppDatabase {
     final rows = await db.query(
       tableNotificationTemplates,
       where: 'fingerprint = ? AND source_package = ?',
-      whereArgs: [fingerprint, sourcePackage],
+      whereArgs: [fingerprint.trim(), sourcePackage.trim()],
       limit: 1,
     );
     return rows.isEmpty ? null : NotificationTemplate.fromMap(rows.single);
+  }
+
+  static final RegExp _sourcePackagePattern = RegExp(
+    r'^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$',
+  );
+  static final RegExp _roleSignaturePattern = RegExp(
+    r'^[A-Za-z][A-Za-z0-9]*(?:\|[A-Za-z][A-Za-z0-9]*)+$',
+  );
+  static final RegExp _placeholderPattern = RegExp(r'<[A-Z_]+>');
+
+  void _validateNotificationTemplateObservation({
+    required String fingerprint,
+    required String sourcePackage,
+    required NotificationTemplateFieldMetadata fieldPositionMetadata,
+    required String roleSignature,
+  }) {
+    if (fingerprint.isEmpty ||
+        fingerprint.length > 2048 ||
+        fingerprint.contains('\n') ||
+        fingerprint.contains('\r')) {
+      throw const FormatException('Invalid notification fingerprint.');
+    }
+    if (sourcePackage.length > 255 ||
+        !_sourcePackagePattern.hasMatch(sourcePackage)) {
+      throw const FormatException('Invalid notification source package.');
+    }
+    if (roleSignature.length > 512 ||
+        !_roleSignaturePattern.hasMatch(roleSignature)) {
+      throw const FormatException('Invalid notification role signature.');
+    }
+    if (fieldPositionMetadata.fields.isEmpty) {
+      throw const FormatException(
+        'A learned notification template must contain a typed field.',
+      );
+    }
+
+    final tokens = fingerprint.split(RegExp(r'\s+'));
+    final knownPlaceholders = NotificationTemplateFieldType.values
+        .map((type) => type.placeholder)
+        .toSet();
+    final placeholders = _placeholderPattern
+        .allMatches(fingerprint)
+        .map((match) => match.group(0)!)
+        .toList(growable: false);
+    if (placeholders.any(
+          (placeholder) => !knownPlaceholders.contains(placeholder),
+        ) ||
+        placeholders.length != fieldPositionMetadata.fields.length) {
+      throw const FormatException(
+        'Notification fingerprint contains invalid typed fields.',
+      );
+    }
+    for (final type in NotificationTemplateFieldType.values) {
+      final fingerprintCount = placeholders
+          .where((placeholder) => placeholder == type.placeholder)
+          .length;
+      final metadataCount = fieldPositionMetadata.fields
+          .where((field) => field.type == type)
+          .length;
+      if (fingerprintCount != metadataCount) {
+        throw const FormatException(
+          'Notification field roles do not match their fingerprint.',
+        );
+      }
+    }
+    for (final field in fieldPositionMetadata.fields) {
+      if (field.tokenIndex >= tokens.length ||
+          !tokens[field.tokenIndex].contains(field.type.placeholder)) {
+        throw FormatException(
+          'Notification field ${field.type.placeholder} at token '
+          '${field.tokenIndex} does not match a '
+          '${tokens.length}-token fingerprint.',
+        );
+      }
+    }
   }
 
   Future<RawNotificationInsertResult> insertRawNotificationIdempotently(
@@ -1519,14 +1714,72 @@ class AppDatabase {
     return rows.isEmpty ? null : RawNotificationEvent.fromMap(rows.first);
   }
 
+  /// Removes sensitive notification text as soon as it is no longer needed
+  /// for user review. Hashes and non-content metadata remain available for
+  /// deduplication and the local audit trail.
+  Future<int> redactNonReviewRawNotificationPayloads() async {
+    final pendingReviewRawIds = (await getTransactionsForReview())
+        .map((review) => review.rawEvent.id)
+        .whereType<int>()
+        .toList();
+    final placeholders = List.filled(pendingReviewRawIds.length, '?').join(',');
+    final reviewExclusion = pendingReviewRawIds.isEmpty
+        ? ''
+        : 'AND id NOT IN ($placeholders)';
+    final db = await database;
+    return db.update(
+      tableRawNotificationEvents,
+      {'title': null, 'content': null},
+      where: '(title IS NOT NULL OR content IS NOT NULL) $reviewExclusion',
+      whereArgs: pendingReviewRawIds,
+    );
+  }
+
   Future<int> createParsedFinancialEvent(ParsedFinancialEvent event) async {
     final db = await database;
     return db.insert(tableParsedFinancialEvents, event.toMap());
   }
 
+  /// Persists bounded, value-free parser telemetry in the encrypted database.
+  Future<int> createParserDiagnostic(ParserDiagnostic diagnostic) async {
+    const maximumLocalDiagnostics = 500;
+    final db = await database;
+    return db.transaction((txn) async {
+      final id = await txn.insert(tableParserDiagnostics, diagnostic.toMap());
+      await txn.rawDelete(
+        'DELETE FROM $tableParserDiagnostics WHERE id NOT IN '
+        '(SELECT id FROM $tableParserDiagnostics '
+        'ORDER BY observed_at DESC, id DESC LIMIT ?)',
+        [maximumLocalDiagnostics],
+      );
+      return id;
+    });
+  }
+
+  Future<List<ParserDiagnostic>> getParserDiagnostics({int limit = 500}) async {
+    if (limit < 1 || limit > 500) {
+      throw RangeError.range(limit, 1, 500, 'limit');
+    }
+    final db = await database;
+    final rows = await db.query(
+      tableParserDiagnostics,
+      orderBy: 'observed_at DESC, id DESC',
+      limit: limit,
+    );
+    return rows.map(ParserDiagnostic.fromMap).toList(growable: false);
+  }
+
+  Future<int> clearParserDiagnostics() async {
+    final db = await database;
+    return db.delete(tableParserDiagnostics);
+  }
+
   Future<int> postIngestedTransaction({
     required Transaction transaction,
     required int parsedFinancialEventId,
+    required int transactionGroupId,
+    required LedgerEventRole eventRole,
+    required String? ledgerCategory,
   }) async {
     final db = await database;
     return db.transaction((txn) async {
@@ -1537,6 +1790,7 @@ class AppDatabase {
       await txn.insert(
         tableLedgerEntries,
         LedgerEntry(
+          transactionGroupId: transactionGroupId,
           parsedFinancialEventId: parsedFinancialEventId,
           legacyTransactionId: transactionId,
           accountId: transaction.accountId,
@@ -1546,8 +1800,8 @@ class AppDatabase {
           amountMinor: majorToMinor(transaction.amount),
           currencyCode: 'INR',
           occurredAt: transaction.timestamp,
-          eventRole: LedgerEventRole.primary,
-          category: transaction.category,
+          eventRole: eventRole,
+          category: ledgerCategory,
           merchant: transaction.merchant,
           createdAt: DateTime.now().toUtc(),
         ).toMap(),
@@ -1806,7 +2060,7 @@ class AppDatabase {
   }
 
   /// Returns retained, transaction-like notifications that have enough parsed
-  /// data for the user to confirm, but have not affected the ledger yet.
+  /// evidence for the user to correct, but have not affected the ledger yet.
   Future<List<ReviewTransaction>> getTransactionsForReview() async {
     final db = await database;
     final rows = await db.rawQuery('''
@@ -1825,8 +2079,8 @@ class AppDatabase {
       FROM $tableParsedFinancialEvents p
       JOIN $tableRawNotificationEvents r ON r.id = p.raw_notification_event_id
       WHERE p.parse_decision IN ('provisional', 'retainOnly')
-        AND p.amount_minor IS NOT NULL
-        AND p.status IN ('completed', 'reversed')
+        AND r.processing_state IN ('retained', 'parsed', 'failed')
+        AND p.status IN ('completed', 'reversed', 'unknown')
         AND p.event_type NOT IN ('balanceAlert')
         AND NOT EXISTS (
           SELECT 1 FROM $tableParsedEventLedgerLinks link
@@ -1838,28 +2092,95 @@ class AppDatabase {
         )
       ORDER BY COALESCE(p.transaction_occurred_at, r.posted_at) DESC, p.id DESC
     ''');
-    return rows.map((row) {
-      final parsed = ParsedFinancialEvent.fromMap(row);
-      final raw = RawNotificationEvent.fromMap({
-        'id': row['raw_id'],
-        'package_name': row['raw_package_name'],
-        'notification_key': row['raw_notification_key'],
-        'notification_id': row['raw_notification_id'],
-        'notification_tag': row['raw_notification_tag'],
-        'title': row['raw_title'],
-        'content': row['raw_content'],
-        'posted_at': row['raw_posted_at'],
-        'ingested_at': row['raw_ingested_at'],
-        'payload_hash': row['raw_payload_hash'],
-        'parser_version': row['raw_parser_version'],
-        'processing_state': row['raw_processing_state'],
-        'structural_fingerprint': row['raw_structural_fingerprint'],
-        'supersedes_event_id': row['raw_supersedes_event_id'],
-        'exact_duplicate_of_event_id': row['raw_exact_duplicate_of_event_id'],
-        'duplicate_rationale': row['raw_duplicate_rationale'],
-      });
-      return ReviewTransaction(parsedEvent: parsed, rawEvent: raw);
-    }).toList();
+    return rows
+        .map((row) {
+          final parsed = ParsedFinancialEvent.fromMap(row);
+          final raw = RawNotificationEvent.fromMap({
+            'id': row['raw_id'],
+            'package_name': row['raw_package_name'],
+            'notification_key': row['raw_notification_key'],
+            'notification_id': row['raw_notification_id'],
+            'notification_tag': row['raw_notification_tag'],
+            'title': row['raw_title'],
+            'content': row['raw_content'],
+            'posted_at': row['raw_posted_at'],
+            'ingested_at': row['raw_ingested_at'],
+            'payload_hash': row['raw_payload_hash'],
+            'parser_version': row['raw_parser_version'],
+            'processing_state': row['raw_processing_state'],
+            'structural_fingerprint': row['raw_structural_fingerprint'],
+            'supersedes_event_id': row['raw_supersedes_event_id'],
+            'exact_duplicate_of_event_id':
+                row['raw_exact_duplicate_of_event_id'],
+            'duplicate_rationale': row['raw_duplicate_rationale'],
+          });
+          return ReviewTransaction(parsedEvent: parsed, rawEvent: raw);
+        })
+        .where(_isTransactionLikeReviewCandidate)
+        .toList();
+  }
+
+  bool _isTransactionLikeReviewCandidate(ReviewTransaction review) {
+    return _isReviewableParsedEvent(review.parsedEvent);
+  }
+
+  bool _isReviewableParsedEvent(ParsedFinancialEvent parsed) {
+    final transactionPhrase = parsed.fieldConfidence['transactionPhrase'] ?? 0;
+    final reviewableDecision =
+        parsed.parseDecision == ParseDecision.provisional ||
+        parsed.parseDecision == ParseDecision.retainOnly;
+    final reviewableStatus =
+        parsed.status == FinancialEventStatus.completed ||
+        parsed.status == FinancialEventStatus.reversed ||
+        parsed.status == FinancialEventStatus.unknown;
+    return reviewableDecision &&
+        reviewableStatus &&
+        parsed.eventType != FinancialEventType.balanceAlert &&
+        transactionPhrase >= .75 &&
+        parsed.failureCode != 'non_financial_or_sensitive' &&
+        parsed.failureCode != 'non_posting_financial_alert';
+  }
+
+  /// Dismisses a review candidate without deleting its local audit evidence.
+  ///
+  /// The raw event is marked ignored, which removes it from the inbox while
+  /// preserving the notification and parse result for local diagnostics.
+  Future<void> dismissReviewedTransaction(int parsedFinancialEventId) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows = await txn.rawQuery(
+        '''
+        SELECT p.*, r.processing_state raw_processing_state
+        FROM $tableParsedFinancialEvents p
+        JOIN $tableRawNotificationEvents r
+          ON r.id = p.raw_notification_event_id
+        WHERE p.id = ?
+        LIMIT 1
+        ''',
+        [parsedFinancialEventId],
+      );
+      if (rows.isEmpty) {
+        throw StateError('Review item is no longer available.');
+      }
+      final parsed = ParsedFinancialEvent.fromMap(rows.single);
+      if (!_isReviewableState(rows.single['raw_processing_state'] as String) ||
+          !_isReviewableParsedEvent(parsed)) {
+        throw StateError('Review item is no longer available.');
+      }
+      await _ensureReviewIsUnresolved(txn, parsedFinancialEventId);
+      await txn.rawUpdate(
+        '''
+        UPDATE $tableRawNotificationEvents
+        SET processing_state = 'ignored', title = NULL, content = NULL
+        WHERE id = (
+          SELECT raw_notification_event_id
+          FROM $tableParsedFinancialEvents
+          WHERE id = ?
+        )
+        ''',
+        [parsedFinancialEventId],
+      );
+    });
   }
 
   /// Posts a user-confirmed review item and links it to the original parsed
@@ -1870,41 +2191,75 @@ class AppDatabase {
   }) async {
     final db = await database;
     return db.transaction((txn) async {
-      final parsedRows = await txn.query(
-        tableParsedFinancialEvents,
-        where: 'id = ?',
-        whereArgs: [parsedFinancialEventId],
-        limit: 1,
+      final parsedRows = await txn.rawQuery(
+        '''
+        SELECT p.*, r.processing_state raw_processing_state
+        FROM $tableParsedFinancialEvents p
+        JOIN $tableRawNotificationEvents r
+          ON r.id = p.raw_notification_event_id
+        WHERE p.id = ?
+        LIMIT 1
+        ''',
+        [parsedFinancialEventId],
       );
       if (parsedRows.isEmpty) {
         throw StateError('Review item is no longer available.');
       }
-      final alreadyLinked = await txn.query(
-        tableParsedEventLedgerLinks,
-        where: 'parsed_financial_event_id = ?',
-        whereArgs: [parsedFinancialEventId],
-        limit: 1,
-      );
-      if (alreadyLinked.isNotEmpty) {
-        throw StateError('Review item has already been resolved.');
+      final parsed = ParsedFinancialEvent.fromMap(parsedRows.single);
+      if (!_isReviewableState(
+            parsedRows.single['raw_processing_state'] as String,
+          ) ||
+          !_isReviewableParsedEvent(parsed)) {
+        throw StateError('Review item is no longer available.');
       }
-      final transactionId = await txn.insert(tableTransactions, transaction.toMap());
+      await _ensureReviewIsUnresolved(txn, parsedFinancialEventId);
+
+      final amountMinor = majorToMinor(transaction.amount);
+      if (amountMinor <= 0) {
+        throw ArgumentError.value(
+          transaction.amount,
+          'transaction.amount',
+          'Reviewed transaction amount must be positive.',
+        );
+      }
+      final now = DateTime.now().toUtc();
+      final group = await _resolveReviewGroup(
+        txn,
+        parsed: parsed,
+        transaction: transaction,
+        amountMinor: amountMinor,
+        now: now,
+      );
+      final eventRole = _reviewLedgerRole(parsed.eventType);
+      final ledgerCategory = _reviewLedgerCategory(
+        eventType: parsed.eventType,
+        selectedCategory: transaction.category,
+        groupCategory: group.category,
+      );
+      final storedTransaction = transaction.copyWith(
+        category: ledgerCategory ?? 'Uncategorized',
+      );
+      final transactionId = await txn.insert(
+        tableTransactions,
+        storedTransaction.toMap(),
+      );
       final ledgerId = await txn.insert(
         tableLedgerEntries,
         LedgerEntry(
+          transactionGroupId: group.id,
           parsedFinancialEventId: parsedFinancialEventId,
           legacyTransactionId: transactionId,
-          accountId: transaction.accountId,
-          direction: transaction.type == TransactionType.credit
+          accountId: storedTransaction.accountId,
+          direction: storedTransaction.type == TransactionType.credit
               ? FinancialDirection.credit
               : FinancialDirection.debit,
-          amountMinor: majorToMinor(transaction.amount),
+          amountMinor: amountMinor,
           currencyCode: 'INR',
-          occurredAt: transaction.timestamp,
-          eventRole: LedgerEventRole.primary,
-          category: transaction.category,
-          merchant: transaction.merchant,
-          createdAt: DateTime.now().toUtc(),
+          occurredAt: storedTransaction.timestamp,
+          eventRole: eventRole,
+          category: ledgerCategory,
+          merchant: storedTransaction.merchant,
+          createdAt: now,
         ).toMap(),
       );
       await txn.insert(tableParsedEventLedgerLinks, {
@@ -1912,17 +2267,323 @@ class AppDatabase {
         'ledger_entry_id': ledgerId,
         'match_rationale': 'userConfirmedReview',
         'confidence': 1.0,
-        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'created_at': now.toIso8601String(),
       });
+      await txn.insert(tableParsedEventGroupLinks, {
+        'parsed_financial_event_id': parsedFinancialEventId,
+        'transaction_group_id': group.id,
+        'match_rationale': 'userConfirmedReview',
+        'confidence': 1.0,
+        'created_at': now.toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
       await txn.rawUpdate(
-        '''UPDATE $tableRawNotificationEvents SET processing_state = 'posted'
+        '''UPDATE $tableRawNotificationEvents
+           SET processing_state = 'posted', title = NULL, content = NULL
            WHERE id = (SELECT raw_notification_event_id
                        FROM $tableParsedFinancialEvents WHERE id = ?)''',
         [parsedFinancialEventId],
       );
-      await _rebuildAccountBalance(txn, transaction.accountId);
+      await _rebuildAccountBalance(txn, storedTransaction.accountId);
       return transactionId;
     });
+  }
+
+  bool _isReviewableState(String state) =>
+      state == RawNotificationProcessingState.retained.storageValue ||
+      state == RawNotificationProcessingState.parsed.storageValue ||
+      state == RawNotificationProcessingState.failed.storageValue;
+
+  Future<void> _ensureReviewIsUnresolved(
+    DatabaseExecutor txn,
+    int parsedFinancialEventId,
+  ) async {
+    final alreadyLinked = await txn.rawQuery(
+      '''
+      SELECT 1
+      FROM $tableParsedEventLedgerLinks
+      WHERE parsed_financial_event_id = ?
+      UNION ALL
+      SELECT 1
+      FROM $tableLedgerEntries
+      WHERE parsed_financial_event_id = ?
+      LIMIT 1
+      ''',
+      [parsedFinancialEventId, parsedFinancialEventId],
+    );
+    if (alreadyLinked.isNotEmpty) {
+      throw StateError('Review item has already been resolved.');
+    }
+  }
+
+  Future<TransactionGroup> _resolveReviewGroup(
+    DatabaseExecutor txn, {
+    required ParsedFinancialEvent parsed,
+    required Transaction transaction,
+    required int amountMinor,
+    required DateTime now,
+  }) async {
+    final relatedGroupId = await _findReviewRelatedGroupId(txn, parsed);
+    if (relatedGroupId != null) {
+      final rows = await txn.query(
+        tableTransactionGroups,
+        where: 'id = ?',
+        whereArgs: [relatedGroupId],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        var group = TransactionGroup.fromMap(rows.single);
+        if (parsed.eventType == FinancialEventType.refund) {
+          final completed = group.completedRefundAmountMinor + amountMinor;
+          final refundable =
+              group.refundableAmountMinor ?? group.originalAmountMinor;
+          final exceedsRefundable =
+              refundable != null && completed > refundable;
+          final missingOriginal = group.originalAmountMinor == null;
+          group = TransactionGroup(
+            id: group.id,
+            groupType: refundable == null
+                ? TransactionGroupType.unknown
+                : completed == refundable
+                ? TransactionGroupType.purchaseRefund
+                : TransactionGroupType.partialRefund,
+            merchantNormalized: group.merchantNormalized,
+            category: group.category,
+            originalAmountMinor: group.originalAmountMinor,
+            refundableAmountMinor: group.refundableAmountMinor,
+            completedRefundAmountMinor: completed,
+            netExpenseMinor: (group.originalAmountMinor ?? 0) - completed,
+            transferType: group.transferType,
+            isInconsistent:
+                group.isInconsistent || missingOriginal || exceedsRefundable,
+            inconsistencyReason: missingOriginal
+                ? 'refund_original_purchase_unidentified'
+                : exceedsRefundable
+                ? 'completed_refund_exceeds_refundable_amount'
+                : group.inconsistencyReason,
+            createdAt: group.createdAt,
+            updatedAt: now,
+          );
+          await txn.update(
+            tableTransactionGroups,
+            group.toMap(),
+            where: 'id = ?',
+            whereArgs: [group.id],
+          );
+        } else if (parsed.eventType == FinancialEventType.reversal) {
+          group = TransactionGroup(
+            id: group.id,
+            groupType: TransactionGroupType.reversal,
+            merchantNormalized: group.merchantNormalized,
+            category: group.category,
+            originalAmountMinor: group.originalAmountMinor,
+            refundableAmountMinor: group.refundableAmountMinor,
+            completedRefundAmountMinor: group.completedRefundAmountMinor,
+            netExpenseMinor: 0,
+            transferType: group.transferType,
+            isInconsistent: group.isInconsistent,
+            inconsistencyReason: group.inconsistencyReason,
+            createdAt: group.createdAt,
+            updatedAt: now,
+          );
+          await txn.update(
+            tableTransactionGroups,
+            group.toMap(),
+            where: 'id = ?',
+            whereArgs: [group.id],
+          );
+        }
+        return group;
+      }
+    }
+
+    final direction = transaction.type == TransactionType.credit
+        ? FinancialDirection.credit
+        : FinancialDirection.debit;
+    final eventRole = _reviewLedgerRole(parsed.eventType);
+    final groupType = _reviewGroupType(parsed.eventType);
+    final countsAsExpense =
+        direction == FinancialDirection.debit &&
+        eventRole == LedgerEventRole.primary &&
+        groupType != TransactionGroupType.transfer;
+    final isRefund = parsed.eventType == FinancialEventType.refund;
+    final isReversal = parsed.eventType == FinancialEventType.reversal;
+    final group = TransactionGroup(
+      groupType: groupType,
+      merchantNormalized:
+          parsed.merchantNormalized ??
+          transaction.merchant.trim().toLowerCase(),
+      category: _reviewLedgerCategory(
+        eventType: parsed.eventType,
+        selectedCategory: transaction.category,
+      ),
+      originalAmountMinor: countsAsExpense ? amountMinor : null,
+      refundableAmountMinor: countsAsExpense ? amountMinor : null,
+      completedRefundAmountMinor: isRefund ? amountMinor : 0,
+      netExpenseMinor: isRefund
+          ? -amountMinor
+          : countsAsExpense
+          ? amountMinor
+          : 0,
+      transferType: groupType == TransactionGroupType.transfer
+          ? TransferType.external
+          : null,
+      isInconsistent: isRefund || isReversal,
+      inconsistencyReason: isRefund
+          ? 'refund_original_purchase_unidentified'
+          : isReversal
+          ? 'reversal_original_transaction_unidentified'
+          : null,
+      createdAt: now,
+      updatedAt: now,
+    );
+    final groupId = await txn.insert(tableTransactionGroups, group.toMap());
+    return TransactionGroup(
+      id: groupId,
+      groupType: group.groupType,
+      merchantNormalized: group.merchantNormalized,
+      category: group.category,
+      originalAmountMinor: group.originalAmountMinor,
+      refundableAmountMinor: group.refundableAmountMinor,
+      completedRefundAmountMinor: group.completedRefundAmountMinor,
+      netExpenseMinor: group.netExpenseMinor,
+      transferType: group.transferType,
+      isInconsistent: group.isInconsistent,
+      inconsistencyReason: group.inconsistencyReason,
+      createdAt: group.createdAt,
+      updatedAt: group.updatedAt,
+    );
+  }
+
+  Future<int?> _findReviewRelatedGroupId(
+    DatabaseExecutor txn,
+    ParsedFinancialEvent parsed,
+  ) async {
+    final directLinks = await txn.query(
+      tableParsedEventGroupLinks,
+      columns: ['transaction_group_id'],
+      where: 'parsed_financial_event_id = ?',
+      whereArgs: [parsed.id],
+      orderBy: 'confidence DESC, created_at ASC',
+      limit: 1,
+    );
+    if (directLinks.isNotEmpty) {
+      return directLinks.single['transaction_group_id'] as int;
+    }
+    if (parsed.eventType != FinancialEventType.refund &&
+        parsed.eventType != FinancialEventType.reversal &&
+        parsed.eventType != FinancialEventType.transfer) {
+      return null;
+    }
+    final reference = parsed.referenceNumber?.trim();
+    if (reference == null || reference.isEmpty) return null;
+    final rows = await txn.rawQuery(
+      '''
+      SELECT peg.transaction_group_id
+      FROM $tableParsedEventGroupLinks peg
+      JOIN $tableParsedFinancialEvents candidate
+        ON candidate.id = peg.parsed_financial_event_id
+      WHERE candidate.id != ?
+        AND LOWER(TRIM(candidate.reference_number)) = LOWER(TRIM(?))
+      ORDER BY peg.confidence DESC, candidate.id DESC
+      LIMIT 1
+      ''',
+      [parsed.id, reference],
+    );
+    return rows.isEmpty ? null : rows.single['transaction_group_id'] as int;
+  }
+
+  LedgerEventRole _reviewLedgerRole(FinancialEventType eventType) =>
+      switch (eventType) {
+        FinancialEventType.refund => LedgerEventRole.refund,
+        FinancialEventType.reversal => LedgerEventRole.reversal,
+        FinancialEventType.fee => LedgerEventRole.fee,
+        _ => LedgerEventRole.primary,
+      };
+
+  TransactionGroupType _reviewGroupType(FinancialEventType eventType) =>
+      switch (eventType) {
+        FinancialEventType.purchase => TransactionGroupType.purchase,
+        FinancialEventType.refund => TransactionGroupType.unknown,
+        FinancialEventType.reversal => TransactionGroupType.reversal,
+        FinancialEventType.transfer => TransactionGroupType.transfer,
+        FinancialEventType.authorization =>
+          TransactionGroupType.authorizationCompletion,
+        FinancialEventType.cashback => TransactionGroupType.cashbackRelated,
+        _ => TransactionGroupType.unknown,
+      };
+
+  String? _reviewLedgerCategory({
+    required FinancialEventType eventType,
+    required String selectedCategory,
+    String? groupCategory,
+  }) {
+    if (eventType == FinancialEventType.refund ||
+        eventType == FinancialEventType.reversal) {
+      final category = groupCategory ?? selectedCategory;
+      return category.trim().toLowerCase() == 'salary' ? null : category;
+    }
+    return selectedCategory;
+  }
+
+  /// Returns the lifecycle group already associated with a ledger entry.
+  ///
+  /// Older notification-created rows may not have [transaction_group_id]
+  /// populated, so the parsed-event link is used as a migration-safe fallback.
+  Future<int?> getTransactionGroupIdForLedgerEntry(int ledgerEntryId) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT COALESCE(
+        l.transaction_group_id,
+        (
+          SELECT peg.transaction_group_id
+          FROM $tableParsedEventLedgerLinks pel
+          JOIN $tableParsedEventGroupLinks peg
+            ON peg.parsed_financial_event_id =
+               pel.parsed_financial_event_id
+          WHERE pel.ledger_entry_id = l.id
+          ORDER BY peg.confidence DESC, peg.created_at ASC
+          LIMIT 1
+        ),
+        (
+          SELECT peg.transaction_group_id
+          FROM $tableParsedEventGroupLinks peg
+          WHERE peg.parsed_financial_event_id =
+                l.parsed_financial_event_id
+          ORDER BY peg.confidence DESC, peg.created_at ASC
+          LIMIT 1
+        )
+      ) AS transaction_group_id
+      FROM $tableLedgerEntries l
+      WHERE l.id = ?
+      LIMIT 1
+      ''',
+      [ledgerEntryId],
+    );
+    if (rows.isEmpty) return null;
+    return rows.single['transaction_group_id'] as int?;
+  }
+
+  /// Repairs lifecycle metadata on an existing ledger entry without changing
+  /// its monetary effect. This is used when a duplicate notification reveals
+  /// a group link for a row created by an older app version.
+  Future<void> updateLedgerLifecycle({
+    required int ledgerEntryId,
+    required int transactionGroupId,
+    required LedgerEventRole eventRole,
+    required String? category,
+  }) async {
+    final db = await database;
+    await db.update(
+      tableLedgerEntries,
+      {
+        'transaction_group_id': transactionGroupId,
+        'event_role': eventRole.storageValue,
+        'category': category,
+      },
+      where: 'id = ?',
+      whereArgs: [ledgerEntryId],
+    );
   }
 
   Future<int> createTransactionGroup(TransactionGroup group) async {

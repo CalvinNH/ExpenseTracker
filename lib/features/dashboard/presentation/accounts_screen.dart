@@ -129,7 +129,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                         height: 44,
                         padding: const EdgeInsets.all(4),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFE5E7EB).withOpacity(0.5),
+                          color: const Color(0xFFE5E7EB).withValues(alpha: 0.5),
                           borderRadius: BorderRadius.circular(22),
                         ),
                         child: Row(
@@ -471,7 +471,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                               Icon(
                                 Icons.account_balance_rounded,
                                 size: 64,
-                                color: AppTheme.textMuted.withOpacity(0.4),
+                                color: AppTheme.textMuted.withValues(alpha: 0.4),
                               ),
                               const SizedBox(height: 16),
                               const Text(
@@ -567,7 +567,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                     borderRadius: BorderRadius.circular(26),
                     boxShadow: [
                       BoxShadow(
-                        color: AppTheme.primaryBlue.withOpacity(0.3),
+                        color: AppTheme.primaryBlue.withValues(alpha: 0.3),
                         blurRadius: 12,
                         offset: const Offset(0, 6),
                       ),

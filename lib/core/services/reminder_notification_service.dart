@@ -1,104 +1,137 @@
+import 'package:expense_tracker/core/services/reminder_notification_gateway.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+enum ReminderUpdateResult { enabled, disabled, permissionDenied, failed }
+
+abstract interface class ReminderSettingsStore {
+  Future<String?> read(String key);
+
+  Future<void> write(String key, String value);
+}
+
+final class SecureReminderSettingsStore implements ReminderSettingsStore {
+  const SecureReminderSettingsStore({FlutterSecureStorage? storage})
+    : _storage = storage ?? const FlutterSecureStorage();
+
+  final FlutterSecureStorage _storage;
+
+  @override
+  Future<String?> read(String key) => _storage.read(key: key);
+
+  @override
+  Future<void> write(String key, String value) =>
+      _storage.write(key: key, value: value);
+}
+
 class ReminderNotificationService {
-  ReminderNotificationService._();
+  ReminderNotificationService({
+    ReminderNotificationGateway? notifications,
+    ReminderSettingsStore? storage,
+  }) : _notifications = notifications ?? PluginReminderNotificationGateway(),
+       _storage = storage ?? const SecureReminderSettingsStore();
+
   static final ReminderNotificationService instance =
-      ReminderNotificationService._();
+      ReminderNotificationService();
 
-  static const _enabledKey = 'daily_reminder_enabled';
-  static const _hourKey = 'daily_reminder_hour';
-  static const _minuteKey = 'daily_reminder_minute';
+  static const enabledKey = 'daily_reminder_enabled';
+  static const hourKey = 'daily_reminder_hour';
+  static const minuteKey = 'daily_reminder_minute';
 
-  final _notificationsPlugin = FlutterLocalNotificationsPlugin();
-  final _storage = const FlutterSecureStorage();
+  final ReminderNotificationGateway _notifications;
+  final ReminderSettingsStore _storage;
+  Future<void>? _initialization;
 
-  bool _isInitialized = false;
+  Future<void> initialize() => _initialization ??= _initialize();
 
-  Future<void> initialize() async {
-    if (_isInitialized) return;
-
-    const androidSettings = AndroidInitializationSettings(
-      '@mipmap/ic_launcher',
-    );
-    const initSettings = InitializationSettings(android: androidSettings);
-
+  Future<void> _initialize() async {
     try {
-      await _notificationsPlugin.initialize(initSettings);
-      _isInitialized = true;
-
-      // Reschedule on startup if enabled
+      await _notifications.initialize();
       if (await isReminderEnabled()) {
-        final time = await getReminderTime();
-        await scheduleDailyReminder(time);
+        await _notifications.scheduleDaily(await getReminderTime());
       }
-    } catch (_) {}
+    } catch (_) {
+      _initialization = null;
+    }
   }
 
   Future<bool> isReminderEnabled() async {
-    final val = await _storage.read(key: _enabledKey);
-    return val == 'true';
+    final value = await _storage.read(enabledKey);
+    return value == 'true';
   }
 
   Future<TimeOfDay> getReminderTime() async {
-    final hourStr = await _storage.read(key: _hourKey);
-    final minuteStr = await _storage.read(key: _minuteKey);
-
-    final hour = int.tryParse(hourStr ?? '21') ?? 21; // Default 9:00 PM
-    final minute = int.tryParse(minuteStr ?? '0') ?? 0;
-
+    final storedHour = int.tryParse(await _storage.read(hourKey) ?? '');
+    final storedMinute = int.tryParse(await _storage.read(minuteKey) ?? '');
+    final hour = storedHour != null && storedHour >= 0 && storedHour <= 23
+        ? storedHour
+        : 21;
+    final minute =
+        storedMinute != null && storedMinute >= 0 && storedMinute <= 59
+        ? storedMinute
+        : 0;
     return TimeOfDay(hour: hour, minute: minute);
   }
 
-  Future<void> setReminderEnabled(bool enabled) async {
-    await _storage.write(key: _enabledKey, value: enabled ? 'true' : 'false');
-    if (enabled) {
-      final time = await getReminderTime();
-      await scheduleDailyReminder(time);
-    } else {
-      await cancelReminder();
+  Future<ReminderUpdateResult> setReminderEnabled(bool enabled) async {
+    if (!enabled) {
+      try {
+        await _notifications.cancel();
+        await _storage.write(enabledKey, 'false');
+        return ReminderUpdateResult.disabled;
+      } catch (_) {
+        return ReminderUpdateResult.failed;
+      }
+    }
+
+    try {
+      await _notifications.initialize();
+      if (!await _notifications.requestPermission()) {
+        await _notifications.cancel();
+        await _storage.write(enabledKey, 'false');
+        return ReminderUpdateResult.permissionDenied;
+      }
+
+      await _notifications.scheduleDaily(await getReminderTime());
+      await _storage.write(enabledKey, 'true');
+      return ReminderUpdateResult.enabled;
+    } catch (_) {
+      try {
+        await _notifications.cancel();
+        await _storage.write(enabledKey, 'false');
+      } catch (_) {}
+      return ReminderUpdateResult.failed;
     }
   }
 
-  Future<void> setReminderTime(TimeOfDay time) async {
-    await _storage.write(key: _hourKey, value: time.hour.toString());
-    await _storage.write(key: _minuteKey, value: time.minute.toString());
-    if (await isReminderEnabled()) {
-      await scheduleDailyReminder(time);
+  Future<bool> setReminderTime(TimeOfDay time) async {
+    try {
+      if (await isReminderEnabled()) {
+        await _notifications.scheduleDaily(time);
+      }
+      await _storage.write(hourKey, time.hour.toString());
+      await _storage.write(minuteKey, time.minute.toString());
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
-  Future<void> scheduleDailyReminder(TimeOfDay time) async {
-    await cancelReminder();
-
-    const androidDetails = AndroidNotificationDetails(
-      'daily_missed_txns_channel',
-      'Daily Reminder',
-      channelDescription:
-          'Reminds you to manually add any missed transactions of the day',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-    );
-
-    const details = NotificationDetails(android: androidDetails);
-
+  Future<bool> scheduleDailyReminder(TimeOfDay time) async {
     try {
-      await _notificationsPlugin.periodicallyShow(
-        888,
-        'Expense Tracker',
-        'Add any missed transactions of the day manually',
-        RepeatInterval.daily,
-        details,
-        androidScheduleMode: AndroidScheduleMode.inexact,
-      );
-    } catch (_) {}
+      await _notifications.scheduleDaily(time);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  Future<void> cancelReminder() async {
+  Future<bool> cancelReminder() async {
     try {
-      await _notificationsPlugin.cancel(888);
-    } catch (_) {}
+      await _notifications.cancel();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 }

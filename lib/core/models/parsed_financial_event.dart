@@ -20,6 +20,7 @@ class ParsedFinancialEvent {
     this.transactionOccurredAt,
     required this.overallConfidence,
     this.fieldConfidence = const {},
+    this.classificationMetadata = '{}',
     required this.parseDecision,
     this.failureCode,
     this.ledgerDuplicateConfidence = 0,
@@ -42,6 +43,7 @@ class ParsedFinancialEvent {
   final DateTime? transactionOccurredAt;
   final double overallConfidence;
   final Map<String, double> fieldConfidence;
+  final String classificationMetadata;
   final ParseDecision parseDecision;
   final String? failureCode;
   final double ledgerDuplicateConfidence;
@@ -64,6 +66,7 @@ class ParsedFinancialEvent {
     'transaction_occurred_at': transactionOccurredAt?.toIso8601String(),
     'overall_confidence': overallConfidence,
     'field_confidence': jsonEncode(fieldConfidence),
+    'classification_metadata': classificationMetadata,
     'parse_decision': parseDecision.storageValue,
     'failure_code': failureCode,
     'ledger_duplicate_confidence': ledgerDuplicateConfidence,
@@ -94,6 +97,7 @@ class ParsedFinancialEvent {
       fieldConfidence: decodedConfidence.map(
         (key, value) => MapEntry(key, (value as num).toDouble()),
       ),
+      classificationMetadata: map['classification_metadata'] as String? ?? '{}',
       parseDecision: ParseDecision.fromStorage(map['parse_decision'] as String),
       failureCode: map['failure_code'] as String?,
       ledgerDuplicateConfidence:

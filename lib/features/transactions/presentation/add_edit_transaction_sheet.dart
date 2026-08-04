@@ -74,7 +74,11 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
     final review = widget.reviewTransaction;
     if (review != null) {
       final parsed = review.parsedEvent;
-      _amountController.text = minorToMajor(parsed.amountMinor!).toStringAsFixed(2);
+      if (parsed.amountMinor != null) {
+        _amountController.text = minorToMajor(
+          parsed.amountMinor!,
+        ).toStringAsFixed(2);
+      }
       _merchantController.text =
           parsed.merchantRaw ?? parsed.merchantNormalized ?? 'Unspecified merchant';
       _selectedType = parsed.direction == FinancialDirection.credit
@@ -258,7 +262,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: AppTheme.textMuted.withOpacity(0.3),
+                  color: AppTheme.textMuted.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -286,7 +290,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                         width: 36,
                         height: 36,
                         decoration: BoxDecoration(
-                          color: color.withOpacity(0.12),
+                          color: color.withValues(alpha: 0.12),
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
@@ -341,7 +345,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: AppTheme.textMuted.withOpacity(0.3),
+                  color: AppTheme.textMuted.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -378,7 +382,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                           height: 36,
                           decoration: BoxDecoration(
                             color: (isCard ? Colors.grey : AppTheme.primaryBlue)
-                                .withOpacity(0.12),
+                                .withValues(alpha: 0.12),
                             shape: BoxShape.circle,
                           ),
                           child: Icon(
@@ -569,7 +573,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
               width: 32,
               height: 32,
               decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
+                color: color.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
               ),
               child: Icon(icon, color: color, size: 16),
@@ -648,7 +652,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: AppTheme.textMuted.withOpacity(0.3),
+                    color: AppTheme.textMuted.withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -685,6 +689,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                           tooltip: 'Delete Transaction',
                         ),
                       GestureDetector(
+                        key: const Key('transaction-sheet-close'),
                         onTap: () => Navigator.pop(context),
                         child: Container(
                           width: 32,
@@ -717,10 +722,10 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                       vertical: 10,
                     ),
                     decoration: BoxDecoration(
-                      color: AppTheme.primaryBlue.withOpacity(0.08),
+                      color: AppTheme.primaryBlue.withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: AppTheme.primaryBlue.withOpacity(0.2),
+                        color: AppTheme.primaryBlue.withValues(alpha: 0.2),
                       ),
                     ),
                     child: const Row(
@@ -755,7 +760,7 @@ class _AddEditTransactionSheetState extends State<AddEditTransactionSheet> {
                 height: 48,
                 padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFE5E7EB).withOpacity(0.5),
+                  color: const Color(0xFFE5E7EB).withValues(alpha: 0.5),
                   borderRadius: BorderRadius.circular(24),
                 ),
                 child: Row(

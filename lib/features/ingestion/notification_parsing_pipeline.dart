@@ -1,27 +1,8 @@
 import 'package:expense_tracker/core/models/financial_enums.dart';
 import 'package:expense_tracker/core/models/money.dart';
+import 'package:expense_tracker/features/ingestion/financial_notification_classifier.dart';
 
-class NormalizedNotification {
-  const NormalizedNotification({
-    required this.originalText,
-    required this.comparisonText,
-  });
-
-  final String originalText;
-  final String comparisonText;
-}
-
-enum FinancialRelevance {
-  transaction,
-  otp,
-  promotion,
-  balanceOnly,
-  creditLimitOnly,
-  billReminder,
-  minimumDueReminder,
-  rewardsOnly,
-  unknown,
-}
+export 'package:expense_tracker/features/ingestion/financial_notification_classifier.dart';
 
 enum MonetarySemanticRole {
   transactionAmount,
@@ -97,6 +78,8 @@ class ConfidenceThresholds {
 class FinancialParseResult {
   const FinancialParseResult({
     required this.normalized,
+    required this.classification,
+    required this.extractorsUsed,
     required this.relevance,
     required this.amountCandidates,
     required this.selectedAmount,
@@ -115,6 +98,8 @@ class FinancialParseResult {
   });
 
   final NormalizedNotification normalized;
+  final ClassificationResult classification;
+  final List<String> extractorsUsed;
   final FinancialRelevance relevance;
   final List<MonetaryCandidate> amountCandidates;
   final MonetaryCandidate? selectedAmount;
@@ -134,10 +119,6 @@ class FinancialParseResult {
 
 abstract interface class NotificationNormalizer {
   NormalizedNotification normalize(String title, String content);
-}
-
-abstract interface class FinancialRelevanceClassifier {
-  FinancialRelevance classify(NormalizedNotification input);
 }
 
 abstract interface class AmountExtractor {
@@ -233,42 +214,6 @@ class DefaultNotificationNormalizer implements NotificationNormalizer {
   }
 }
 
-class DefaultFinancialRelevanceClassifier
-    implements FinancialRelevanceClassifier {
-  @override
-  FinancialRelevance classify(NormalizedNotification input) {
-    final text = input.comparisonText;
-    if (_has(text, r'\b(otp|one time password|verification code)\b')) {
-      return FinancialRelevance.otp;
-    }
-    if (_has(text, r'\b(offer|sale|discount|promo|coupon)\b') &&
-        !_transactionPhrase(text)) {
-      return FinancialRelevance.promotion;
-    }
-    if (_has(text, r'\b(reward points?|loyalty points?)\b') &&
-        !_transactionPhrase(text)) {
-      return FinancialRelevance.rewardsOnly;
-    }
-    if (_has(text, r'\b(minimum (?:amount )?due|min due)\b')) {
-      return FinancialRelevance.minimumDueReminder;
-    }
-    if (_has(text, r'\b(bill due|payment due|due date)\b') &&
-        !_transactionPhrase(text)) {
-      return FinancialRelevance.billReminder;
-    }
-    if (_has(text, r'\bcredit limit\b') && !_transactionPhrase(text)) {
-      return FinancialRelevance.creditLimitOnly;
-    }
-    if (_has(text, r'\b(available|avl) balance\b') &&
-        !_transactionPhrase(text)) {
-      return FinancialRelevance.balanceOnly;
-    }
-    return _transactionPhrase(text)
-        ? FinancialRelevance.transaction
-        : FinancialRelevance.unknown;
-  }
-}
-
 class DefaultAmountExtractor implements AmountExtractor {
   static final _amountPattern = RegExp(
     r'(?:₹|inr|rs\.?|rupees?)\s*(?:/-|-)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)',
@@ -321,7 +266,7 @@ class DefaultAmountExtractor implements AmountExtractor {
       MonetarySemanticRole.refundAmount: RegExp(r'\b(refund|refunded)\b'),
       MonetarySemanticRole.fee: RegExp(r'\b(fee|charge)\b'),
       MonetarySemanticRole.transactionAmount: RegExp(
-        r'\b(debited|credited|paid|payment|received|sent|withdrawn|deposited|spent|purchase|txn|transaction|transferred|refund|reversal|cashback)\b',
+        r'\b(debited|deducted|credited|paid|payment|received|sent|withdrawn|deposited|spent|purchase|txn|transaction|transfer|transferred|refund|reversal|cashback)\b',
       ),
     };
     var result = MonetarySemanticRole.unknown;
@@ -359,7 +304,7 @@ class DefaultDirectionExtractor implements DirectionExtractor {
     // card transaction amount followed by a merchant is an unambiguous spend.
     final cardMerchantPurchase = _has(
       text,
-      r'\btransaction\s+of\b(?=.{0,100}\b(?:card|merchant|at)\b)',
+      r'\b(?:transaction\s+of\b(?=.{0,100}\b(?:card|merchant|at)\b)|transaction\s+on\s+(?:your\s+)?card\b)',
     );
     if (credit && debit) {
       if (_has(
@@ -372,10 +317,7 @@ class DefaultDirectionExtractor implements DirectionExtractor {
     }
     if (credit) return const ExtractedField(FinancialDirection.credit, 0.95);
     if (debit || cardMerchantPurchase) {
-      return ExtractedField(
-        FinancialDirection.debit,
-        debit ? 0.95 : 0.78,
-      );
+      return ExtractedField(FinancialDirection.debit, debit ? 0.95 : 0.78);
     }
     return const ExtractedField(FinancialDirection.unknown, 0);
   }
@@ -456,6 +398,20 @@ class DefaultEventTypeExtractor implements EventTypeExtractor {
 class DefaultInstrumentExtractor implements InstrumentExtractor {
   @override
   ExtractedField<InstrumentEvidence> extract(NormalizedNotification input) {
+    final strictMatch = RegExp(
+      r'(?:account|card)(?:\s+(?:number|no\.?|ending(?:\s+in)?))?\s*[:#-]?\s*(?:[x*.]*)?(\d{4,})|(?:[x*.]{2,})(\d{4,})',
+      caseSensitive: false,
+    ).firstMatch(input.comparisonText);
+    if (strictMatch != null) {
+      final digits = strictMatch.group(1) ?? strictMatch.group(2)!;
+      return ExtractedField(
+        InstrumentEvidence(
+          lastFour: digits.substring(digits.length - 4),
+          raw: strictMatch.group(0),
+        ),
+        0.95,
+      );
+    }
     final match = RegExp(
       r'(?:account|card|ending|[x*•●.]{2,})[^0-9]{0,12}(?:[x*•●.]*)?(\d{4,})',
       caseSensitive: false,
@@ -493,7 +449,6 @@ class DefaultInstitutionExtractor implements InstitutionExtractor {
     // the wallet package, so title/content remains the local identity signal.
     'paytm': 'paytm_wallet',
     'amazon pay': 'amazon_pay_wallet',
-    'idfc': 'idfc',
     'indusind': 'indusind',
     'yes bank': 'yes',
   };
@@ -737,7 +692,7 @@ class DefaultParseValidator implements ParseValidator {
 class NotificationParsingPipeline {
   NotificationParsingPipeline({
     NotificationNormalizer? normalizer,
-    FinancialRelevanceClassifier? relevanceClassifier,
+    FinancialNotificationClassifier? notificationClassifier,
     AmountExtractor? amountExtractor,
     DirectionExtractor? directionExtractor,
     StatusExtractor? statusExtractor,
@@ -750,8 +705,11 @@ class NotificationParsingPipeline {
     ConfidenceCalculator? confidenceCalculator,
     ParseValidator? validator,
   }) : normalizer = normalizer ?? DefaultNotificationNormalizer(),
-       relevanceClassifier =
-           relevanceClassifier ?? DefaultFinancialRelevanceClassifier(),
+       notificationClassifier = notificationClassifier == null
+           ? const DeterministicFinancialNotificationClassifier()
+           : ResilientFinancialNotificationClassifier(
+               primary: notificationClassifier,
+             ),
        amountExtractor = amountExtractor ?? DefaultAmountExtractor(),
        directionExtractor = directionExtractor ?? DefaultDirectionExtractor(),
        statusExtractor = statusExtractor ?? DefaultStatusExtractor(),
@@ -769,7 +727,7 @@ class NotificationParsingPipeline {
        validator = validator ?? DefaultParseValidator();
 
   final NotificationNormalizer normalizer;
-  final FinancialRelevanceClassifier relevanceClassifier;
+  final FinancialNotificationClassifier notificationClassifier;
   final AmountExtractor amountExtractor;
   final DirectionExtractor directionExtractor;
   final StatusExtractor statusExtractor;
@@ -789,7 +747,8 @@ class NotificationParsingPipeline {
     bool knownPackage = false,
   }) {
     final normalized = normalizer.normalize(title, content);
-    final relevance = relevanceClassifier.classify(normalized);
+    final classification = notificationClassifier.classify(normalized);
+    final relevance = classification.relevance;
     final amounts = amountExtractor.extract(normalized);
     final selectedAmount = _selectAmount(amounts);
     final direction = directionExtractor.extract(normalized);
@@ -816,8 +775,8 @@ class NotificationParsingPipeline {
       reference: reference,
       merchant: merchant,
       knownPackage: knownPackage,
-      recognizedTransactionPhrase: _transactionPhrase(
-        normalized.comparisonText,
+      recognizedTransactionPhrase: classification.features.contains(
+        FinancialNotificationSemanticFeature.transactionAction,
       ),
     );
     final validation = validator.validate(
@@ -829,6 +788,22 @@ class NotificationParsingPipeline {
     );
     return FinancialParseResult(
       normalized: normalized,
+      classification: classification,
+      extractorsUsed: List.unmodifiable([
+        'normalizer.default.v1',
+        'classifier.${classification.classifierId}.${classification.classifierVersion}',
+        'amount.default.v1',
+        'direction.default.v1',
+        'status.default.v1',
+        'event_type.default.v1',
+        'instrument.default.v1',
+        'institution.default.v1',
+        'reference.default.v1',
+        'merchant.default.v1',
+        'transaction_time.default.v1',
+        'confidence.default.v1',
+        'validator.default.v1',
+      ]),
       relevance: relevance,
       amountCandidates: amounts,
       selectedAmount: selectedAmount,
@@ -868,5 +843,5 @@ bool _has(String text, String pattern) =>
 
 bool _transactionPhrase(String text) => _has(
   text,
-  r'\b(debited|credited|paid|payment|received|sent|spent|withdrawn|deposited|transferred|added to balance|refund|refunded|reversed|cashback|purchase|transaction|txn)\b',
+  r'\b(debited|deducted|credited|paid|payment|received|sent|spent|withdrawn|deposited|transfer|transferred|added to balance|refund|refunded|reversed|cashback|purchase|transaction|txn)\b',
 );
