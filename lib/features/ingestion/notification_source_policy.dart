@@ -1,8 +1,10 @@
 enum NotificationSourceClass {
   defaultSmsPackage,
+  knownNonDefaultSmsPackage,
   knownFinancialPackage,
   knownWalletPackage,
   knownMerchantPackage,
+  bestEffortEmailPackage,
   ignoredPackage,
   unknownPackage,
 }
@@ -15,15 +17,24 @@ class NotificationSourcePolicy {
   final String? defaultSmsPackage;
 
   static const knownFinancialPackages = <String>{
+    'com.sbi.lotusintouch',
     'com.snapwork.hdfc',
     'com.sbi.SBIFreedomPlus',
     'com.csam.icici.bank.imobile',
     'com.axis.mobile',
     'com.msf.kbank.mobile',
     'com.kotakbank.mobile',
+    'com.Version1',
+    'com.bankofbaroda.mconnect',
+    'com.canarabank.mobility',
+    'com.infrasoft.uboi',
+    'com.IndianBank.IndOASIS',
     'com.idfcfirstbank.optimus',
+    'com.atomyes',
     'com.yesbank',
+    'com.fss.indus',
     'com.indusind.indusmobile',
+    'com.fedmobile',
     'com.rblbank.mobank',
   };
 
@@ -46,12 +57,20 @@ class NotificationSourcePolicy {
     'com.myntra.android',
   };
 
+  static const bestEffortEmailPackages = <String>{'com.google.android.gm'};
+
   static const ignoredPackages = <String>{
     'com.calvin.expense_tracker',
     'android',
     'com.android.systemui',
     'com.google.android.gms',
     'com.android.vending',
+    'com.spotify.music',
+    'com.google.android.apps.youtube.music',
+    'com.google.android.youtube',
+    'com.amazon.mp3',
+    'com.apple.android.music',
+    'org.videolan.vlc',
   };
 
   static const knownSmsPackages = <String>{
@@ -66,13 +85,13 @@ class NotificationSourcePolicy {
     if (ignoredPackages.contains(packageName)) {
       return NotificationSourceClass.ignoredPackage;
     }
-    if (defaultSmsPackage != null && packageName == defaultSmsPackage) {
+    final reportedDefault = defaultSmsPackage?.trim();
+    final hasReportedDefault = reportedDefault?.isNotEmpty ?? false;
+    if (hasReportedDefault && packageName == reportedDefault) {
       return NotificationSourceClass.defaultSmsPackage;
     }
-    // When Android cannot report the current default, locally known SMS apps
-    // receive the same source treatment. This is classification, not filtering.
     if (knownSmsPackages.contains(packageName)) {
-      return NotificationSourceClass.defaultSmsPackage;
+      return NotificationSourceClass.knownNonDefaultSmsPackage;
     }
     if (knownFinancialPackages.contains(packageName)) {
       return NotificationSourceClass.knownFinancialPackage;
@@ -82,6 +101,9 @@ class NotificationSourcePolicy {
     }
     if (knownMerchantPackages.contains(packageName)) {
       return NotificationSourceClass.knownMerchantPackage;
+    }
+    if (bestEffortEmailPackages.contains(packageName)) {
+      return NotificationSourceClass.bestEffortEmailPackage;
     }
     return NotificationSourceClass.unknownPackage;
   }

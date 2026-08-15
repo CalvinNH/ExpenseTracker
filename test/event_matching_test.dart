@@ -60,6 +60,25 @@ void main() {
     expect(result.confidence, lessThan(.85));
   });
 
+  test('conflicting references remain distinct despite an exact timestamp', () {
+    final result = const LedgerDuplicateDetector().assess(
+      fingerprint(
+        reference: 'UTR-B',
+        sourcePackage: 'email.app',
+        time: occurredAt,
+      ),
+      [
+        LedgerMatchCandidate(
+          ledgerEntryId: 7,
+          fingerprint: fingerprint(reference: 'UTR-A'),
+        ),
+      ],
+    );
+
+    expect(result.isDefinitive, isFalse);
+    expect(result.matchedId, isNull);
+  });
+
   test('same amount and merchant on different accounts never match', () {
     final result = const LedgerDuplicateDetector()
         .assess(fingerprint(accountId: 2, reference: 'UTR-B'), [

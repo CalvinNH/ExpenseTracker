@@ -28,6 +28,12 @@ void main() {
       if (fixture.instrumentLastFour != null) {
         expect(result.instrument.lastFour, fixture.instrumentLastFour);
       }
+      if (fixture.merchantNormalized != null) {
+        expect(result.merchant.normalized, fixture.merchantNormalized);
+      }
+      if (fixture.transactionOccurredAt != null) {
+        expect(result.transactionTime, fixture.transactionOccurredAt);
+      }
       if (fixture.autoPostEligible) {
         expect(result.decision, ParseDecision.autoPost);
       } else {

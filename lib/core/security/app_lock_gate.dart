@@ -64,7 +64,9 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
     // Re-lock on backgrounding, but not when the pause is caused by
     // the system auth prompt itself (_authInProgress guard).
     final isBackgrounded =
-        state == AppLifecycleState.hidden || state == AppLifecycleState.paused;
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused;
     if (isBackgrounded && !_authInProgress && _unlocked) {
       setState(() => _unlocked = false);
     }
@@ -97,39 +99,40 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        widget.child,
-        if (!_unlocked)
-          Scaffold(
-            backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-            body: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.lock_rounded,
-                    size: 48,
-                    color: Color(0xFF0044FF),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Expense Tracker is locked',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: _authenticate,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppTheme.primaryBlue,
-                    ),
-                    child: const Text('Unlock'),
-                  ),
-                ],
-              ),
+    // Do not keep the private subtree mounted behind an overlay. This clears
+    // an open sheet, form field, and navigation state before the user returns
+    // from background, then creates a fresh app entry after authentication.
+    if (_unlocked) return widget.child;
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset(
+              'assets/icon/app_icon.png',
+              width: 96,
+              height: 96,
+              semanticLabel: 'Expense Tracker logo',
             ),
-          ),
-      ],
+            const SizedBox(height: 20),
+            const Icon(Icons.lock_rounded, size: 32, color: Color(0xFF0044FF)),
+            const SizedBox(height: 12),
+            const Text(
+              'Expense Tracker is locked',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              onPressed: _authenticate,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.primaryBlue,
+              ),
+              child: const Text('Unlock'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

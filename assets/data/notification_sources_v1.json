@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "primaryFinancialPackages": [
+    "com.sbi.lotusintouch",
+    "com.sbi.SBIFreedomPlus",
+    "com.snapwork.hdfc",
+    "com.csam.icici.bank.imobile",
+    "com.axis.mobile",
+    "com.msf.kbank.mobile",
+    "com.kotakbank.mobile",
+    "com.Version1",
+    "com.bankofbaroda.mconnect",
+    "com.canarabank.mobility",
+    "com.infrasoft.uboi",
+    "com.IndianBank.IndOASIS",
+    "com.idfcfirstbank.optimus",
+    "com.atomyes",
+    "com.yesbank",
+    "com.fss.indus",
+    "com.indusind.indusmobile",
+    "com.fedmobile",
+    "com.rblbank.mobank"
+  ],
+  "primaryWalletPackages": [
+    "net.one97.paytm",
+    "com.google.android.apps.nbu.paisa.user",
+    "com.phonepe.app",
+    "in.org.npci.upiapp",
+    "com.mobikwik_new",
+    "com.freecharge.android"
+  ],
+  "knownSmsPackages": [
+    "com.google.android.apps.messaging",
+    "com.samsung.android.messaging",
+    "com.android.mms",
+    "com.miui.mms",
+    "com.oneplus.mms"
+  ],
+  "bestEffortPackages": ["com.google.android.gm"],
+  "corroborationOnlyPackages": [
+    "in.amazon.mShop.android.shopping",
+    "com.flipkart.android",
+    "com.application.zomato",
+    "in.swiggy.android",
+    "com.ubercab",
+    "com.olacabs.customer",
+    "com.myntra.android"
+  ],
+  "ignoredPackages": [
+    "com.calvin.expense_tracker",
+    "android",
+    "com.android.systemui",
+    "com.google.android.gms",
+    "com.android.vending",
+    "com.spotify.music",
+    "com.google.android.apps.youtube.music",
+    "com.google.android.youtube",
+    "com.amazon.mp3",
+    "com.apple.android.music",
+    "org.videolan.vlc"
+  ]
+}

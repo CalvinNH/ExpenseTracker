@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/entity_resolution/account_resolver.dart';
 import 'package:expense_tracker/core/entity_resolution/institution_registry.dart';
@@ -19,6 +21,7 @@ import 'package:expense_tracker/features/ingestion/structural_notification_finge
 class NotificationEnvelope {
   const NotificationEnvelope({
     required this.packageName,
+    this.captureReceiptId,
     this.notificationKey,
     this.notificationId,
     this.notificationTag,
@@ -30,6 +33,7 @@ class NotificationEnvelope {
   });
 
   final String packageName;
+  final String? captureReceiptId;
 
   /// The current plugin does not expose a stable notification key or tag, so
   /// these remain nullable. Android notification ID and posted time are used
@@ -56,6 +60,17 @@ enum IngestionDisposition {
   posted,
 }
 
+enum IngestionFaultCheckpoint {
+  beforeRawInsert,
+  afterRawInsert,
+  afterParsedInsert,
+  afterLedgerGroupLink,
+  afterDomainEffectsBeforeReceiptCommit,
+}
+
+typedef IngestionFaultInjector =
+    FutureOr<void> Function(IngestionFaultCheckpoint checkpoint);
+
 class IngestionResult {
   const IngestionResult({
     required this.disposition,
@@ -65,6 +80,7 @@ class IngestionResult {
     this.diagnosticCode,
     this.duplicateConfidence = 0,
     this.matchedLedgerEntryId,
+    this.isReceiptReplay = false,
   });
 
   final IngestionDisposition disposition;
@@ -74,6 +90,7 @@ class IngestionResult {
   final String? diagnosticCode;
   final double duplicateConfidence;
   final int? matchedLedgerEntryId;
+  final bool isReceiptReplay;
 }
 
 class _RelatedEventLink {
@@ -92,7 +109,8 @@ class NotificationIngestionProcessor {
     NotificationSourcePolicy? sourcePolicy,
     NotificationParsingPipeline? parsingPipeline,
     this.institutionRegistry,
-    this.parserVersion = 2,
+    this.parserVersion = 3,
+    this.faultInjectorForTesting,
   }) : _database = database ?? AppDatabase.instance,
        _sourcePolicy = sourcePolicy ?? NotificationSourcePolicy(),
        _parsingPipeline = parsingPipeline ?? NotificationParser.pipeline;
@@ -103,8 +121,92 @@ class NotificationIngestionProcessor {
   final InstitutionRegistry? institutionRegistry;
   static Future<InstitutionRegistry>? _defaultRegistry;
   final int parserVersion;
+  final IngestionFaultInjector? faultInjectorForTesting;
 
   Future<IngestionResult> ingest(NotificationEnvelope envelope) async {
+    final captureReceiptId = envelope.captureReceiptId?.trim();
+    if (captureReceiptId == null || captureReceiptId.isEmpty) {
+      return _ingestOnce(envelope);
+    }
+
+    final alreadyCompleted = await _completedReceiptOrTombstone(
+      _database,
+      captureReceiptId,
+    );
+    if (alreadyCompleted != null) {
+      return _resultFromReceipt(alreadyCompleted);
+    }
+
+    try {
+      return await _database.runInTransaction((scopedDatabase) async {
+        final racedCompletion = await _completedReceiptOrTombstone(
+          scopedDatabase,
+          captureReceiptId,
+        );
+        if (racedCompletion != null) {
+          return _resultFromReceipt(racedCompletion);
+        }
+
+        final scopedProcessor = NotificationIngestionProcessor(
+          database: scopedDatabase,
+          sourcePolicy: _sourcePolicy,
+          parsingPipeline: _parsingPipeline,
+          institutionRegistry: institutionRegistry,
+          parserVersion: parserVersion,
+          faultInjectorForTesting: faultInjectorForTesting,
+        );
+        final result = await scopedProcessor._ingestOnce(
+          envelope,
+          normalizedCaptureReceiptId: captureReceiptId,
+        );
+        await scopedProcessor._injectFault(
+          IngestionFaultCheckpoint.afterDomainEffectsBeforeReceiptCommit,
+        );
+        await scopedDatabase.completeNotificationIngestionReceipt(
+          NotificationIngestionReceiptOutcome(
+            captureReceiptId: captureReceiptId,
+            disposition: result.disposition.name,
+            rawEventId: result.rawEventId,
+            parsedFinancialEventId: result.parsedFinancialEventId,
+            transactionId: result.transactionId,
+            diagnosticCode: result.diagnosticCode,
+            duplicateConfidence: result.duplicateConfidence,
+            matchedLedgerEntryId: result.matchedLedgerEntryId,
+          ),
+        );
+        return result;
+      });
+    } catch (error, stackTrace) {
+      // Covers a concurrent unique-receipt race and the commit-succeeded /
+      // response-lost window without hiding a real failed transaction.
+      try {
+        final completed = await _completedReceiptOrTombstone(
+          _database,
+          captureReceiptId,
+        );
+        if (completed != null) return _resultFromReceipt(completed);
+      } catch (_) {
+        // Preserve the original ingestion failure and stack trace.
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
+  Future<NotificationIngestionReceiptOutcome?> _completedReceiptOrTombstone(
+    AppDatabase database,
+    String captureReceiptId,
+  ) async {
+    final completed = await database.getCompletedNotificationIngestionReceipt(
+      captureReceiptId,
+    );
+    return completed ??
+        database.getTerminalNotificationIngestionTombstone(captureReceiptId);
+  }
+
+  Future<IngestionResult> _ingestOnce(
+    NotificationEnvelope envelope, {
+    String? normalizedCaptureReceiptId,
+  }) async {
     if (envelope.hasRemoved) {
       return const IngestionResult(
         disposition: IngestionDisposition.ignored,
@@ -119,10 +221,20 @@ class NotificationIngestionProcessor {
         diagnosticCode: 'source_explicitly_ignored',
       );
     }
+    final isPrimaryAuthority =
+        sourceClass == NotificationSourceClass.defaultSmsPackage ||
+        sourceClass == NotificationSourceClass.knownFinancialPackage ||
+        sourceClass == NotificationSourceClass.knownWalletPackage;
+    final isSecondaryCorroborationSource =
+        sourceClass == NotificationSourceClass.bestEffortEmailPackage ||
+        sourceClass == NotificationSourceClass.knownMerchantPackage;
 
     final postedAt = envelope.postedAt ?? envelope.ingestedAt;
+    await _injectFault(IngestionFaultCheckpoint.beforeRawInsert);
     final rawInsert = await _database.insertRawNotificationIdempotently(
       RawNotificationEvent(
+        captureReceiptId:
+            normalizedCaptureReceiptId ?? envelope.captureReceiptId,
         packageName: envelope.packageName,
         notificationKey: envelope.notificationKey,
         notificationId: envelope.notificationId,
@@ -144,6 +256,7 @@ class NotificationIngestionProcessor {
         ),
       ),
     );
+    await _injectFault(IngestionFaultCheckpoint.afterRawInsert);
     final rawEvent = rawInsert.event;
     final parsed = _parsingPipeline.parse(
       envelope.title ?? '',
@@ -154,7 +267,10 @@ class NotificationIngestionProcessor {
     final structuralTemplate = const NotificationStructuralFingerprinter()
         .generate(parsed);
     final templateRoleSignature = _templateRoleSignature(parsed);
+    final parserExplicitlyAllowedAutoPost =
+        parsed.decision == ParseDecision.autoPost;
     final isCompletedValidatedParse =
+        isPrimaryAuthority &&
         parsed.decision == ParseDecision.autoPost &&
         parsed.relevance == FinancialRelevance.transaction &&
         parsed.status == FinancialEventStatus.completed &&
@@ -201,6 +317,7 @@ class NotificationIngestionProcessor {
           failureCode: parsed.failureCode ?? 'parser_no_match',
         ),
       );
+      await _injectFault(IngestionFaultCheckpoint.afterParsedInsert);
       await _recordParserDiagnostic(
         parsed: parsed,
         sourceClass: sourceClass,
@@ -250,7 +367,8 @@ class NotificationIngestionProcessor {
         (resolution.resolutionStatus ==
                 ResolutionStatus.newInstrumentCandidate &&
             resolution.confidence >= .8);
-    if (matchedAccount == null &&
+    if (isPrimaryAuthority &&
+        matchedAccount == null &&
         resolution.resolutionStatus ==
             ResolutionStatus.newInstrumentCandidate &&
         hasStrongEvidence) {
@@ -304,8 +422,7 @@ class NotificationIngestionProcessor {
           parsed.selectedAmount != null &&
           parsed.direction != FinancialDirection.unknown &&
           parsed.direction != FinancialDirection.none &&
-          (parsed.decision == ParseDecision.autoPost ||
-              parsed.decision == ParseDecision.provisional);
+          parserExplicitlyAllowedAutoPost;
       final boostedConfidence = (effectiveConfidence + .08)
           .clamp(0.0, .99)
           .toDouble();
@@ -332,6 +449,7 @@ class NotificationIngestionProcessor {
     );
     var duplicateAssessment = const DuplicateAssessment.none();
     var sourceDuplicate = false;
+    var secondaryCorroboration = false;
     IngestionDisposition disposition;
     if (decision == ParseDecision.ignored) {
       disposition = IngestionDisposition.retained;
@@ -347,6 +465,22 @@ class NotificationIngestionProcessor {
       decision = ParseDecision.retainOnly;
       failureCode = 'unknown_source_insufficient_evidence';
       disposition = IngestionDisposition.retained;
+    } else if (!isPrimaryAuthority) {
+      decision = ParseDecision.retainOnly;
+      failureCode = 'secondary_source_review_required';
+      disposition = IngestionDisposition.retained;
+    } else if (!parserExplicitlyAllowedAutoPost) {
+      // Account resolution can confirm where an event belongs, but it cannot
+      // override a parser decision that requires review.
+      decision = parsed.decision;
+      failureCode ??= 'parser_review_required';
+      disposition = decision == ParseDecision.provisional
+          ? IngestionDisposition.provisional
+          : IngestionDisposition.retained;
+    } else if (matchedAccount?.isProvisional ?? false) {
+      decision = ParseDecision.provisional;
+      failureCode = 'account_confirmation_required';
+      disposition = IngestionDisposition.provisional;
     } else if (matchedAccount == null) {
       decision = ParseDecision.provisional;
       failureCode = 'account_unresolved';
@@ -356,13 +490,55 @@ class NotificationIngestionProcessor {
       disposition = IngestionDisposition.posted;
     }
 
-    if (matchedAccount != null && decision == ParseDecision.autoPost) {
-      final exactSourceLedgerId = rawEvent.exactDuplicateOfEventId == null
+    final canCorroborateExistingLedger =
+        isSecondaryCorroborationSource &&
+        matchedAccount != null &&
+        parserExplicitlyAllowedAutoPost &&
+        parsed.relevance == FinancialRelevance.transaction &&
+        parsed.status == FinancialEventStatus.completed &&
+        parsed.direction != FinancialDirection.unknown &&
+        parsed.direction != FinancialDirection.none;
+    final supersessionBaseline = rawEvent.supersedesEventId == null
+        ? null
+        : await _database.getFinancialSupersessionBaseline(
+            rawEvent.supersedesEventId!,
+          );
+    if (supersessionBaseline != null &&
+        matchedAccount != null &&
+        (decision == ParseDecision.autoPost || canCorroborateExistingLedger)) {
+      if (_matchesSupersededFinancialFingerprint(
+        baseline: supersessionBaseline,
+        amountMinor: parsed.selectedAmount!.amountMinor,
+        currencyCode: parsed.selectedAmount!.currency,
+        direction: parsed.direction,
+        accountId: matchedAccount.id!,
+        referenceNumber: parsed.referenceNumber,
+      )) {
+        sourceDuplicate = true;
+        duplicateAssessment = DuplicateAssessment(
+          confidence: 1,
+          rationales: const [MatchRationale.notificationIdentity],
+          matchedId: supersessionBaseline.ledgerEntryId,
+        );
+      } else {
+        decision = ParseDecision.provisional;
+        failureCode = 'updated_notification_financial_conflict';
+        disposition = IngestionDisposition.provisional;
+      }
+    }
+    if (matchedAccount != null &&
+        (decision == ParseDecision.autoPost || canCorroborateExistingLedger)) {
+      final exactSourceLedgerId =
+          duplicateAssessment.isDefinitive ||
+              rawEvent.exactDuplicateOfEventId == null
           ? null
           : await _database.getLedgerEntryIdForRawEvent(
               rawEvent.exactDuplicateOfEventId!,
             );
-      if (exactSourceLedgerId != null) {
+      if (duplicateAssessment.isDefinitive) {
+        // A same-fingerprint update is the same financial effect even when
+        // presentation text changed enough to produce a new capture receipt.
+      } else if (exactSourceLedgerId != null) {
         sourceDuplicate = true;
         duplicateAssessment = DuplicateAssessment(
           confidence: 1,
@@ -390,9 +566,12 @@ class NotificationIngestionProcessor {
         );
       }
       if (duplicateAssessment.isDefinitive) {
+        secondaryCorroboration = canCorroborateExistingLedger;
         decision = ParseDecision.retainOnly;
         failureCode = null;
-        disposition = sourceDuplicate
+        disposition = secondaryCorroboration
+            ? IngestionDisposition.ledgerDuplicate
+            : sourceDuplicate
             ? IngestionDisposition.sourceDuplicate
             : IngestionDisposition.ledgerDuplicate;
       }
@@ -427,6 +606,7 @@ class NotificationIngestionProcessor {
             .join(','),
       ),
     );
+    await _injectFault(IngestionFaultCheckpoint.afterParsedInsert);
     await _recordParserDiagnostic(
       parsed: parsed,
       sourceClass: sourceClass,
@@ -445,6 +625,28 @@ class NotificationIngestionProcessor {
       );
       final existingGroupId = await _database
           .getTransactionGroupIdForLedgerEntry(duplicateAssessment.matchedId!);
+      if (secondaryCorroboration) {
+        if (existingGroupId != null) {
+          await _database.linkParsedEventToGroup(
+            parsedFinancialEventId: parsedId,
+            transactionGroupId: existingGroupId,
+            assessment: duplicateAssessment,
+          );
+        }
+        await _database.updateRawNotificationProcessingState(
+          rawEvent.id!,
+          RawNotificationProcessingState.parsed,
+        );
+        await _redactNonReviewRawPayloads();
+        return IngestionResult(
+          disposition: IngestionDisposition.ledgerDuplicate,
+          rawEventId: rawEvent.id,
+          parsedFinancialEventId: parsedId,
+          diagnosticCode: 'secondary_source_corroboration',
+          duplicateConfidence: duplicateAssessment.confidence,
+          matchedLedgerEntryId: duplicateAssessment.matchedId,
+        );
+      }
       final existingGroup = existingGroupId == null
           ? null
           : await _database.getTransactionGroup(existingGroupId);
@@ -568,6 +770,7 @@ class NotificationIngestionProcessor {
       eventRole: _ledgerEventRoleFor(parsed.eventType),
       ledgerCategory: related.ledgerCategory,
     );
+    await _injectFault(IngestionFaultCheckpoint.afterLedgerGroupLink);
     await _database.updateRawNotificationProcessingState(
       rawEvent.id!,
       RawNotificationProcessingState.posted,
@@ -579,6 +782,34 @@ class NotificationIngestionProcessor {
       parsedFinancialEventId: parsedId,
       transactionId: transactionId,
     );
+  }
+
+  IngestionResult _resultFromReceipt(
+    NotificationIngestionReceiptOutcome outcome,
+  ) {
+    final disposition = IngestionDisposition.values
+        .where((candidate) => candidate.name == outcome.disposition)
+        .firstOrNull;
+    if (disposition == null) {
+      throw StateError(
+        'Unknown persisted ingestion disposition: ${outcome.disposition}',
+      );
+    }
+    return IngestionResult(
+      disposition: disposition,
+      rawEventId: outcome.rawEventId,
+      parsedFinancialEventId: outcome.parsedFinancialEventId,
+      transactionId: outcome.transactionId,
+      diagnosticCode: outcome.diagnosticCode,
+      duplicateConfidence: outcome.duplicateConfidence,
+      matchedLedgerEntryId: outcome.matchedLedgerEntryId,
+      isReceiptReplay: true,
+    );
+  }
+
+  Future<void> _injectFault(IngestionFaultCheckpoint checkpoint) async {
+    final injector = faultInjectorForTesting;
+    if (injector != null) await injector(checkpoint);
   }
 
   Future<void> _redactNonReviewRawPayloads() async {
@@ -608,9 +839,7 @@ class NotificationIngestionProcessor {
           confidence: confidence,
           failureCode: failureCode,
           sourceCategory: sourceClass.name,
-          structuralFingerprint: ParserDiagnosticRedactor.redactFingerprint(
-            structuralFingerprint,
-          ),
+          structuralFingerprint: structuralFingerprint,
         ),
       );
     } catch (_) {
@@ -632,6 +861,27 @@ class NotificationIngestionProcessor {
       caseSensitive: false,
     ).hasMatch(text);
     return hasAmount && hasAction && hasInstrumentOrReference;
+  }
+
+  bool _matchesSupersededFinancialFingerprint({
+    required FinancialSupersessionBaseline baseline,
+    required int amountMinor,
+    required String currencyCode,
+    required FinancialDirection direction,
+    required int accountId,
+    required String? referenceNumber,
+  }) {
+    String? normalizedReference(String? value) {
+      final normalized = value?.trim().toLowerCase();
+      return normalized == null || normalized.isEmpty ? null : normalized;
+    }
+
+    return baseline.amountMinor == amountMinor &&
+        baseline.currencyCode.toUpperCase() == currencyCode.toUpperCase() &&
+        baseline.direction == direction &&
+        baseline.accountId == accountId &&
+        normalizedReference(baseline.referenceNumber) ==
+            normalizedReference(referenceNumber);
   }
 
   bool _hasSettledFinancialEffect(

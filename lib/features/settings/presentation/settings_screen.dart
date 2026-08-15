@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:expense_tracker/core/database/app_database.dart';
@@ -8,7 +9,6 @@ import 'package:expense_tracker/core/widgets/app_toast.dart';
 import 'package:expense_tracker/features/dashboard/presentation/accounts_screen.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
 import 'package:flutter/material.dart';
-import 'package:notification_listener_service/notification_listener_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -19,30 +19,42 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
   bool _isReminderEnabled = false;
   bool _isReminderUpdating = false;
   TimeOfDay _reminderTime = const TimeOfDay(hour: 21, minute: 0);
   bool? _isListenerConnected;
   bool _isReconnecting = false;
+  NotificationCaptureStatus? _captureStatus;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadReminderSettings();
     _checkListenerStatus();
   }
 
   Future<void> _checkListenerStatus() async {
     try {
-      final isGranted = await NotificationListenerService.isPermissionGranted();
-      final isConnected = await NotificationService.isServiceConnected();
+      final status = await NotificationService.getCaptureStatus();
       if (mounted) {
         setState(() {
-          _isListenerConnected = isGranted && isConnected;
+          _isListenerConnected =
+              status.accessGranted && status.listenerConnected;
+          _captureStatus = status;
         });
       }
     } catch (_) {}
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(NotificationService.handleAppResumed());
+      unawaited(_checkListenerStatus());
+    }
   }
 
   Future<void> _loadReminderSettings() async {
@@ -89,6 +101,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
@@ -175,10 +188,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     File? tempFile;
     try {
       final diagnostics = await AppDatabase.instance.getParserDiagnostics();
+      final captureStatus = await NotificationService.getCaptureStatus();
       final payload = const JsonEncoder.withIndent('  ').convert({
-        'schemaVersion': 1,
+        'schemaVersion': 3,
         'exportedAt': DateTime.now().toUtc().toIso8601String(),
-        'privacy': 'No raw notification text or extracted financial values',
+        'privacy':
+            'Coarse allowlisted telemetry only; no notification text, values, identifiers, or content-derived fingerprints',
+        'notificationCapture': captureStatus.toExportMap(),
         'diagnostics': diagnostics
             .map((diagnostic) => diagnostic.toExportMap())
             .toList(growable: false),
@@ -230,9 +246,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               : 'Reconnect attempted. Toggle Notification Access OFF and ON in Android Settings if issues persist.',
         );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
-        AppToast.show(context, 'Reconnect failed: $e', isError: true);
+        AppToast.show(
+          context,
+          'Reconnect failed. Toggle Notification Access off and on in '
+          'Android Settings, then try again.',
+          isError: true,
+        );
       }
     } finally {
       if (mounted) setState(() => _isReconnecting = false);
@@ -240,8 +261,97 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _openNotificationSettings() async {
-    await NotificationListenerService.requestPermission();
-    await _checkListenerStatus();
+    await NotificationService.requestNotificationPermission();
+  }
+
+  Future<void> _reviewAndAcknowledgeCaptureHealth() async {
+    final status = _captureStatus;
+    if (status == null || !status.hasAcknowledgementEligibleIncidents) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Review capture incidents'),
+        content: Text(
+          '${status.capacityRejectedSinceAcknowledgement} rejected, '
+          '${status.capacityEvictedSinceAcknowledgement} evicted, '
+          '${status.storageFailuresSinceAcknowledgement + status.recoveryFailuresSinceAcknowledgement} storage/recovery, and '
+          '${status.workerRetriesSinceAcknowledgement + status.workerFailuresSinceAcknowledgement + status.workerDeferredLockedSinceAcknowledgement} background-worker incident(s) since your last review. '
+          'Acknowledging keeps the lifetime totals and does not hide current work or failures.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Acknowledge reviewed'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final updated = await NotificationService.acknowledgeCaptureHealth();
+      if (!mounted) return;
+      setState(() => _captureStatus = updated);
+      AppToast.show(context, 'Capture incidents marked as reviewed');
+    } catch (_) {
+      if (mounted) {
+        AppToast.show(
+          context,
+          'Could not acknowledge capture health. Refresh and try again.',
+          isError: true,
+        );
+      }
+    }
+  }
+
+  String _captureHealthDescription() {
+    final status = _captureStatus;
+    if (status == null || !status.isAvailable) {
+      return 'Open the app on Android to load capture health.';
+    }
+    if (!status.readSucceeded) {
+      return 'The native inbox could not be read. Refresh now; export diagnostics if this repeats.';
+    }
+    if (!status.accessGranted) {
+      return 'Notification access is disabled. Tap here to enable it in Android Settings.';
+    }
+    if (!status.listenerConnected) {
+      return 'Android has not connected the listener. Tap here to reconnect it.';
+    }
+    if (status.deadLetterCount > 0 || status.quarantinedCount > 0) {
+      return '${status.quarantinedCount} quarantined and '
+          '${status.deadLetterCount} unreadable capture(s). Export diagnostics for review.';
+    }
+    if (status.capacityRejectedSinceAcknowledgement > 0 ||
+        status.capacityEvictedSinceAcknowledgement > 0) {
+      return '${status.capacityRejectedSinceAcknowledgement} rejected and '
+          '${status.capacityEvictedSinceAcknowledgement} evicted capture(s) since review. Review and acknowledge below.';
+    }
+    if (status.storageFailuresSinceAcknowledgement > 0 ||
+        status.recoveryFailuresSinceAcknowledgement > 0) {
+      return '${status.storageFailuresSinceAcknowledgement} storage and ${status.recoveryFailuresSinceAcknowledgement} recovery incident(s) since review. Export diagnostics, then acknowledge.';
+    }
+    if (status.workerRetriesSinceAcknowledgement > 0 ||
+        status.workerFailuresSinceAcknowledgement > 0 ||
+        status.workerDeferredLockedSinceAcknowledgement > 0) {
+      return 'Background processing recorded a retry, failure, or locked-device delay. Refresh after the inbox clears, then acknowledge.';
+    }
+    if (status.legacyMigrationPending > 0) {
+      return '${status.legacyMigrationPending} legacy capture(s) still need migration.';
+    }
+    if (status.retryingCount > 0) {
+      return '${status.retryingCount} capture(s) are waiting for a safe retry.';
+    }
+    if (status.hasStaleBacklogAt(DateTime.now())) {
+      return 'Capture processing is taking too long. Keep the device unlocked, refresh, then export diagnostics if it remains stuck.';
+    }
+    if (status.pendingCount > 0 || status.leasedCount > 0) {
+      return '${status.pendingCount} pending and ${status.leasedCount} processing capture(s).';
+    }
+    return 'Inbox clear. ${status.acknowledgedCount} capture(s) safely processed.';
   }
 
   @override
@@ -667,6 +777,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             fontSize: 16,
                           ),
                         ),
+                        onTap: _captureStatus?.accessGranted == false
+                            ? _openNotificationSettings
+                            : (_captureStatus?.listenerConnected == false
+                                  ? _reconnectListener
+                                  : _checkListenerStatus),
                         subtitle: Padding(
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(
@@ -688,6 +803,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           tooltip: 'Check Status',
                         ),
                       ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      ListTile(
+                        contentPadding: const EdgeInsets.all(16),
+                        leading: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: (_captureStatus?.needsAttention ?? true)
+                                ? AppTheme.coralAccent.withValues(alpha: 0.12)
+                                : AppTheme.successGreen.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Icon(
+                            (_captureStatus?.needsAttention ?? true)
+                                ? Icons.monitor_heart_outlined
+                                : Icons.inbox_rounded,
+                            color: (_captureStatus?.needsAttention ?? true)
+                                ? AppTheme.coralAccent
+                                : AppTheme.successGreen,
+                          ),
+                        ),
+                        title: Text(
+                          _captureStatus == null
+                              ? 'Capture health: Checking'
+                              : (_captureStatus!.needsAttention
+                                    ? 'Capture health: Needs attention'
+                                    : 'Capture health: Healthy'),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textDark,
+                            fontSize: 16,
+                          ),
+                        ),
+                        onTap: _captureStatus?.accessGranted == false
+                            ? _openNotificationSettings
+                            : (_captureStatus?.listenerConnected == false
+                                  ? _reconnectListener
+                                  : _checkListenerStatus),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            _captureHealthDescription(),
+                            style: const TextStyle(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        trailing: IconButton(
+                          icon: const Icon(
+                            Icons.refresh_rounded,
+                            color: AppTheme.primaryBlue,
+                          ),
+                          onPressed: _checkListenerStatus,
+                          tooltip: 'Refresh capture health',
+                        ),
+                      ),
+                      if (_captureStatus?.hasAcknowledgementEligibleIncidents ??
+                          false)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton.icon(
+                              onPressed: _reviewAndAcknowledgeCaptureHealth,
+                              icon: const Icon(Icons.fact_check_outlined),
+                              label: const Text('Review and acknowledge'),
+                            ),
+                          ),
+                        ),
                       const Divider(height: 1, indent: 16, endIndent: 16),
                       ListTile(
                         contentPadding: const EdgeInsets.all(16),

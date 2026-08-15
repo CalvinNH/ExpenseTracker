@@ -21,8 +21,8 @@ void main() {
   const MethodChannel sqfliteChannel = MethodChannel(
     'plugins.flutter.dev/sqflite',
   );
-  const MethodChannel notificationChannel = MethodChannel(
-    'x-slayer/notification_listener_service',
+  const MethodChannel notificationCaptureChannel = MethodChannel(
+    'expense_tracker/notification_capture',
   );
   const MethodChannel secureStorageChannel = MethodChannel(
     'plugins.it_nomads.com/flutter_secure_storage',
@@ -47,10 +47,10 @@ void main() {
         });
 
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(notificationChannel, (
+        .setMockMethodCallHandler(notificationCaptureChannel, (
           MethodCall methodCall,
         ) async {
-          if (methodCall.method == 'isPermissionGranted') {
+          if (methodCall.method == 'hasNotificationAccess') {
             return false;
           }
           return null;
@@ -76,7 +76,7 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(sqfliteChannel, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(notificationChannel, null);
+        .setMockMethodCallHandler(notificationCaptureChannel, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(secureStorageChannel, null);
   });
@@ -95,9 +95,11 @@ void main() {
 
     // Resolve the encrypted database initialization and startup privacy
     // cleanup without relying on a single machine-speed-dependent delay.
-    for (var attempt = 0;
-        attempt < 20 && find.byType(OnboardingScreen).evaluate().isEmpty;
-        attempt++) {
+    for (
+      var attempt = 0;
+      attempt < 20 && find.byType(OnboardingScreen).evaluate().isEmpty;
+      attempt++
+    ) {
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 25));
       });

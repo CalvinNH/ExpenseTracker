@@ -63,11 +63,17 @@ void main() {
 
     await _pumpGate(tester, authenticator);
     expect(find.text('Expense Tracker is locked'), findsNothing);
+    expect(find.text('Private content'), findsOneWidget);
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pump();
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     await tester.pump();
+
+    // Sensitive child content is unmounted, not merely painted underneath a
+    // lock overlay, and the branded lock entry becomes the only screen.
+    expect(find.text('Private content'), findsNothing);
+    expect(find.bySemanticsLabel('Expense Tracker logo'), findsOneWidget);
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pumpAndSettle();

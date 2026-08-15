@@ -36,7 +36,8 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- STREAMING_CHUNK:Registering the Notification Listener Service -->
+        <!-- Keep this exact ComponentName: Android stores notification access
+             grants against it, so changing it would revoke existing users. -->
         <service android:name="notification.listener.service.NotificationListener"
                 android:label="Expense Tracker Notifications"
                 android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
@@ -45,15 +46,6 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
-        <receiver
-            android:name=".NotificationQueueReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="slayer.notification.listener.service.intent" />
-            </intent-filter>
-        </receiver>
-        <!-- END_STREAMING_CHUNK -->
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
             android:exported="false" />
@@ -65,6 +57,16 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".NotificationDrainRescheduleReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

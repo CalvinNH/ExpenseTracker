@@ -7,6 +7,7 @@ enum MatchRationale {
   merchantAndAmount,
   compatibleEventSequence,
   timeProximity,
+  crossSourceExactTime,
   sourcePackageRelationship,
 }
 
@@ -125,10 +126,18 @@ class LedgerDuplicateDetector {
     var score = 0.0;
 
     final reference = _normalize(incoming.reference);
+    final existingReference = _normalize(existing.reference);
     if (_normalize(incoming.direction) != _normalize(existing.direction)) {
       return const DuplicateAssessment.none();
     }
-    if (reference != null && reference == _normalize(existing.reference)) {
+    // Different transaction references are stronger evidence of distinct
+    // payments than a coincidentally matching amount and timestamp.
+    if (reference != null &&
+        existingReference != null &&
+        reference != existingReference) {
+      return const DuplicateAssessment.none();
+    }
+    if (reference != null && reference == existingReference) {
       score += .58;
       rationales.add(MatchRationale.transactionReference);
     }
@@ -157,6 +166,26 @@ class LedgerDuplicateDetector {
     if (difference <= const Duration(minutes: 5)) {
       score += .03;
       rationales.add(MatchRationale.timeProximity);
+    }
+    // An email alert often omits the merchant and reference carried by the
+    // corresponding SMS.  Across distinct sources, an effectively identical
+    // event time plus the same account, direction, and amount is strong enough
+    // to link those complementary alerts.  Keep this narrow so two genuine
+    // same-amount payments are not hidden: conflicting references or merchant
+    // names remain distinct events.
+    final sameOrMissingMerchant = _sameNonEmpty(
+          incoming.merchant,
+          existing.merchant,
+        ) ||
+        _normalize(incoming.merchant) == null ||
+        _normalize(existing.merchant) == null;
+    if (_normalize(incoming.sourcePackage) !=
+            _normalize(existing.sourcePackage) &&
+        difference <= const Duration(seconds: 5) &&
+        sameOrMissingMerchant &&
+        (reference == null || existingReference == null)) {
+      score += .6;
+      rationales.add(MatchRationale.crossSourceExactTime);
     }
     if (_normalize(incoming.sourcePackage) ==
         _normalize(existing.sourcePackage)) {

@@ -20,14 +20,91 @@ import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart' as sqflite_global;
 import 'package:sqflite_sqlcipher/sqflite.dart' hide Transaction;
 
+class NotificationIngestionReceiptOutcome {
+  const NotificationIngestionReceiptOutcome({
+    required this.captureReceiptId,
+    required this.disposition,
+    this.rawEventId,
+    this.parsedFinancialEventId,
+    this.transactionId,
+    this.diagnosticCode,
+    required this.duplicateConfidence,
+    this.matchedLedgerEntryId,
+  });
+
+  final String captureReceiptId;
+  final String disposition;
+  final int? rawEventId;
+  final int? parsedFinancialEventId;
+  final int? transactionId;
+  final String? diagnosticCode;
+  final double duplicateConfidence;
+  final int? matchedLedgerEntryId;
+
+  factory NotificationIngestionReceiptOutcome.fromMap(
+    Map<String, Object?> map,
+  ) => NotificationIngestionReceiptOutcome(
+    captureReceiptId: map['capture_receipt_id'] as String,
+    disposition: map['disposition'] as String,
+    rawEventId: map['raw_event_id'] as int?,
+    parsedFinancialEventId: map['parsed_financial_event_id'] as int?,
+    transactionId: map['transaction_id'] as int?,
+    diagnosticCode: map['diagnostic_code'] as String?,
+    duplicateConfidence: (map['duplicate_confidence'] as num).toDouble(),
+    matchedLedgerEntryId: map['matched_ledger_entry_id'] as int?,
+  );
+
+  Map<String, Object?> toMap() => {
+    'capture_receipt_id': captureReceiptId,
+    'disposition': disposition,
+    'raw_event_id': rawEventId,
+    'parsed_financial_event_id': parsedFinancialEventId,
+    'transaction_id': transactionId,
+    'diagnostic_code': diagnosticCode,
+    'duplicate_confidence': duplicateConfidence,
+    'matched_ledger_entry_id': matchedLedgerEntryId,
+    'completed_at': DateTime.now().toUtc().toIso8601String(),
+  };
+}
+
+class PrivacyRetentionPruneResult {
+  const PrivacyRetentionPruneResult({
+    required this.parserDiagnostics,
+    required this.ingestionReceipts,
+    required this.ignoredRawEvents,
+  });
+
+  final int parserDiagnostics;
+  final int ingestionReceipts;
+  final int ignoredRawEvents;
+}
+
+class FinancialSupersessionBaseline {
+  const FinancialSupersessionBaseline({
+    required this.ledgerEntryId,
+    required this.amountMinor,
+    required this.currencyCode,
+    required this.direction,
+    required this.accountId,
+    this.referenceNumber,
+  });
+
+  final int ledgerEntryId;
+  final int amountMinor;
+  final String currencyCode;
+  final FinancialDirection direction;
+  final int accountId;
+  final String? referenceNumber;
+}
+
 class AppDatabase {
-  AppDatabase._();
+  AppDatabase._([this._scopedExecutor]);
 
   static final AppDatabase instance = AppDatabase._();
 
   static String databaseName = 'expense_tracker.db';
   static String? databasePathOverrideForTesting;
-  static const databaseVersion = 11;
+  static const databaseVersion = 12;
 
   static const tableAccounts = 'accounts';
   static const tableTransactions = 'transactions';
@@ -40,13 +117,21 @@ class AppDatabase {
   static const tableParsedEventGroupLinks = 'parsed_event_group_links';
   static const tableNotificationTemplates = 'notification_templates';
   static const tableParserDiagnostics = 'parser_diagnostics';
+  static const tableNotificationIngestionReceipts =
+      'notification_ingestion_receipts';
 
+  final DatabaseExecutor? _scopedExecutor;
   Database? _database;
   Future<Database>? _databaseFuture;
   String? _passphrase;
   int _generation = 0;
 
   Future<Database> get database async {
+    if (_scopedExecutor != null) {
+      throw StateError(
+        'A transaction-scoped AppDatabase cannot expose a Database handle.',
+      );
+    }
     while (true) {
       final existing = _database;
       if (existing != null && existing.isOpen) {
@@ -71,6 +156,26 @@ class AppDatabase {
         rethrow;
       }
     }
+  }
+
+  Future<DatabaseExecutor> get _executor async =>
+      _scopedExecutor ?? await database;
+
+  Future<T> _withinTransaction<T>(
+    Future<T> Function(DatabaseExecutor executor) action,
+  ) async {
+    final scoped = _scopedExecutor;
+    if (scoped != null) return action(scoped);
+    final db = await database;
+    return db.transaction(action);
+  }
+
+  Future<T> runInTransaction<T>(
+    Future<T> Function(AppDatabase scopedDatabase) action,
+  ) async {
+    if (_scopedExecutor != null) return action(this);
+    final db = await database;
+    return db.transaction((txn) => action(AppDatabase._(txn)));
   }
 
   Future<Database> _initDatabase() async {
@@ -176,6 +281,7 @@ class AppDatabase {
     await _createAccountMergesTable(db);
     await _createNotificationTemplatesTable(db);
     await _createParserDiagnosticsTable(db);
+    await _createNotificationIngestionReceiptsTable(db);
   }
 
   Future<void> _createVersion2Schema(Database db) async {
@@ -239,6 +345,8 @@ class AppDatabase {
           await _upgradeFrom9To10(db);
         case 10:
           await _createParserDiagnosticsTable(db);
+        case 11:
+          await _upgradeFrom11To12(db);
         default:
           throw StateError('No database migration from version $version.');
       }
@@ -576,10 +684,48 @@ class AppDatabase {
     );
   }
 
+  Future<void> _upgradeFrom11To12(Database db) async {
+    if (await _tableExists(db, tableRawNotificationEvents)) {
+      await _addColumnIfMissing(
+        db,
+        tableRawNotificationEvents,
+        'capture_receipt_id',
+        'TEXT',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_capture_receipt_id '
+        'ON $tableRawNotificationEvents (capture_receipt_id) '
+        'WHERE capture_receipt_id IS NOT NULL',
+      );
+    }
+    await _createNotificationIngestionReceiptsTable(db);
+  }
+
+  Future<void> _createNotificationIngestionReceiptsTable(
+    DatabaseExecutor db,
+  ) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $tableNotificationIngestionReceipts (
+        capture_receipt_id TEXT PRIMARY KEY
+          CHECK(length(trim(capture_receipt_id)) > 0),
+        disposition TEXT NOT NULL CHECK(length(trim(disposition)) > 0),
+        raw_event_id INTEGER,
+        parsed_financial_event_id INTEGER,
+        transaction_id INTEGER,
+        diagnostic_code TEXT,
+        duplicate_confidence REAL NOT NULL DEFAULT 0
+          CHECK(duplicate_confidence >= 0 AND duplicate_confidence <= 1),
+        matched_ledger_entry_id INTEGER,
+        completed_at TEXT NOT NULL
+      )
+    ''');
+  }
+
   Future<void> _createDomainTablesAndIndexes(Database db) async {
     await db.execute('''
       CREATE TABLE $tableRawNotificationEvents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        capture_receipt_id TEXT,
         package_name TEXT NOT NULL,
         notification_key TEXT,
         notification_id INTEGER,
@@ -682,6 +828,11 @@ class AppDatabase {
       'ON $tableRawNotificationEvents (package_name, posted_at)',
     );
     await db.execute(
+      'CREATE UNIQUE INDEX idx_raw_capture_receipt_id '
+      'ON $tableRawNotificationEvents (capture_receipt_id) '
+      'WHERE capture_receipt_id IS NOT NULL',
+    );
+    await db.execute(
       'CREATE INDEX idx_parsed_reference_number '
       'ON $tableParsedFinancialEvents (reference_number)',
     );
@@ -776,7 +927,7 @@ class AppDatabase {
   // --- Accounts CRUD ---
 
   Future<int> createAccount(Account account) async {
-    final db = await database;
+    final db = await _executor;
     final suffix =
         account.lastFour ??
         Account.extractSafeTrailingFour(account.displayName);
@@ -788,7 +939,7 @@ class AppDatabase {
   }
 
   Future<Account?> getAccount(int id) async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.query(
       tableAccounts,
       where: 'id = ?',
@@ -804,7 +955,7 @@ class AppDatabase {
   }
 
   Future<List<Account>> getAllAccounts() async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.query(tableAccounts, orderBy: 'display_name ASC');
 
     return rows.map(Account.fromMap).toList();
@@ -1400,8 +1551,83 @@ class AppDatabase {
 
   // --- Notification and financial lifecycle domain ---
 
+  Future<NotificationIngestionReceiptOutcome?>
+  getCompletedNotificationIngestionReceipt(String captureReceiptId) async {
+    final db = await _executor;
+    final rows = await db.query(
+      tableNotificationIngestionReceipts,
+      where: 'capture_receipt_id = ?',
+      whereArgs: [captureReceiptId],
+      limit: 1,
+    );
+    return rows.isEmpty
+        ? null
+        : NotificationIngestionReceiptOutcome.fromMap(rows.single);
+  }
+
+  /// Reconstructs a compact replay tombstone from terminal raw evidence after
+  /// its full receipt outcome has aged out. The raw capture-receipt identity is
+  /// deliberately retained, so a late native redelivery cannot enter the
+  /// ledger pipeline a second time.
+  Future<NotificationIngestionReceiptOutcome?>
+  getTerminalNotificationIngestionTombstone(String captureReceiptId) async {
+    final db = await _executor;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        r.id AS raw_id,
+        r.processing_state,
+        p.id AS parsed_id,
+        p.failure_code,
+        COALESCE(pel.ledger_entry_id, direct.id) AS ledger_id,
+        COALESCE(linked.legacy_transaction_id, direct.legacy_transaction_id)
+          AS transaction_id,
+        COALESCE(pel.confidence, 0) AS duplicate_confidence
+      FROM $tableRawNotificationEvents r
+      LEFT JOIN $tableParsedFinancialEvents p
+        ON p.id = (
+          SELECT newest.id
+          FROM $tableParsedFinancialEvents newest
+          WHERE newest.raw_notification_event_id = r.id
+          ORDER BY newest.id DESC
+          LIMIT 1
+        )
+      LEFT JOIN $tableParsedEventLedgerLinks pel
+        ON pel.parsed_financial_event_id = p.id
+      LEFT JOIN $tableLedgerEntries linked ON linked.id = pel.ledger_entry_id
+      LEFT JOIN $tableLedgerEntries direct
+        ON direct.parsed_financial_event_id = p.id
+      WHERE r.capture_receipt_id = ?
+        AND r.processing_state IN ('posted', 'ignored')
+      ORDER BY pel.confidence DESC, linked.id ASC, direct.id ASC
+      LIMIT 1
+      ''',
+      [captureReceiptId],
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.single;
+    final state = row['processing_state'] as String;
+    return NotificationIngestionReceiptOutcome(
+      captureReceiptId: captureReceiptId,
+      disposition: state == 'posted' ? 'posted' : 'ignored',
+      rawEventId: row['raw_id'] as int,
+      parsedFinancialEventId: row['parsed_id'] as int?,
+      transactionId: row['transaction_id'] as int?,
+      diagnosticCode: row['failure_code'] as String?,
+      duplicateConfidence: (row['duplicate_confidence'] as num).toDouble(),
+      matchedLedgerEntryId: row['ledger_id'] as int?,
+    );
+  }
+
+  Future<void> completeNotificationIngestionReceipt(
+    NotificationIngestionReceiptOutcome outcome,
+  ) async {
+    final db = await _executor;
+    await db.insert(tableNotificationIngestionReceipts, outcome.toMap());
+  }
+
   Future<int> createRawNotificationEvent(RawNotificationEvent event) async {
-    final db = await database;
+    final db = await _executor;
     return db.insert(tableRawNotificationEvents, event.toMap());
   }
 
@@ -1423,8 +1649,7 @@ class AppDatabase {
       fieldPositionMetadata: fieldPositionMetadata,
       roleSignature: roleSignature,
     );
-    final db = await database;
-    return db.transaction((txn) async {
+    return _withinTransaction((txn) async {
       final rows = await txn.query(
         tableNotificationTemplates,
         where: 'fingerprint = ? AND source_package = ?',
@@ -1500,7 +1725,7 @@ class AppDatabase {
     required String fingerprint,
     required String sourcePackage,
   }) async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.query(
       tableNotificationTemplates,
       where: 'fingerprint = ? AND source_package = ?',
@@ -1588,8 +1813,7 @@ class AppDatabase {
   Future<RawNotificationInsertResult> insertRawNotificationIdempotently(
     RawNotificationEvent event,
   ) async {
-    final db = await database;
-    return db.transaction((txn) async {
+    return _withinTransaction((txn) async {
       final payloadMatches = await txn.query(
         tableRawNotificationEvents,
         where: 'package_name = ? AND payload_hash = ?',
@@ -1648,6 +1872,7 @@ class AppDatabase {
       }
 
       final eventToInsert = RawNotificationEvent(
+        captureReceiptId: event.captureReceiptId,
         packageName: event.packageName,
         notificationKey: event.notificationKey,
         notificationId: event.notificationId,
@@ -1688,7 +1913,7 @@ class AppDatabase {
     int id,
     RawNotificationProcessingState state,
   ) async {
-    final db = await database;
+    final db = await _executor;
     await db.update(
       tableRawNotificationEvents,
       {'processing_state': state.storageValue},
@@ -1726,7 +1951,7 @@ class AppDatabase {
     final reviewExclusion = pendingReviewRawIds.isEmpty
         ? ''
         : 'AND id NOT IN ($placeholders)';
-    final db = await database;
+    final db = await _executor;
     return db.update(
       tableRawNotificationEvents,
       {'title': null, 'content': null},
@@ -1736,15 +1961,15 @@ class AppDatabase {
   }
 
   Future<int> createParsedFinancialEvent(ParsedFinancialEvent event) async {
-    final db = await database;
+    final db = await _executor;
     return db.insert(tableParsedFinancialEvents, event.toMap());
   }
 
-  /// Persists bounded, value-free parser telemetry in the encrypted database.
+  /// Persists bounded local parser evidence in the encrypted database. Export
+  /// must use [ParserDiagnostic.toExportMap], which omits content-derived data.
   Future<int> createParserDiagnostic(ParserDiagnostic diagnostic) async {
     const maximumLocalDiagnostics = 500;
-    final db = await database;
-    return db.transaction((txn) async {
+    return _withinTransaction((txn) async {
       final id = await txn.insert(tableParserDiagnostics, diagnostic.toMap());
       await txn.rawDelete(
         'DELETE FROM $tableParserDiagnostics WHERE id NOT IN '
@@ -1774,6 +1999,106 @@ class AppDatabase {
     return db.delete(tableParserDiagnostics);
   }
 
+  /// Best-effort, idempotent privacy maintenance. It intentionally leaves all
+  /// ledger, transaction, group, account, balance, parsed-review and active
+  /// review data untouched.
+  Future<PrivacyRetentionPruneResult> prunePrivacyRetention({
+    DateTime? now,
+  }) async {
+    final utcNow = (now ?? DateTime.now()).toUtc();
+    final diagnosticCutoff = utcNow
+        .subtract(const Duration(days: 90))
+        .toIso8601String();
+    final receiptCutoff = utcNow
+        .subtract(const Duration(days: 180))
+        .toIso8601String();
+    final ignoredRawCutoff = utcNow
+        .subtract(const Duration(days: 365))
+        .toIso8601String();
+    return _withinTransaction((txn) async {
+      var diagnostics = await txn.rawDelete(
+        'DELETE FROM $tableParserDiagnostics WHERE observed_at < ?',
+        [diagnosticCutoff],
+      );
+      diagnostics += await txn.rawDelete(
+        'DELETE FROM $tableParserDiagnostics WHERE id NOT IN '
+        '(SELECT id FROM $tableParserDiagnostics '
+        'ORDER BY observed_at DESC, id DESC LIMIT 500)',
+      );
+
+      // A raw-null outcome has no replayable domain evidence. Raw-backed
+      // outcomes age out only after the raw row is terminal. The explicit
+      // review exclusion is deliberately redundant for posted/ignored rows:
+      // it makes the safety invariant resilient to future state changes.
+      final receipts = await txn.rawDelete(
+        '''
+        DELETE FROM $tableNotificationIngestionReceipts
+        WHERE capture_receipt_id IN (
+          SELECT receipt.capture_receipt_id
+          FROM $tableNotificationIngestionReceipts receipt
+          LEFT JOIN $tableRawNotificationEvents raw
+            ON raw.id = receipt.raw_event_id
+          WHERE receipt.completed_at < ?
+            AND (
+              receipt.raw_event_id IS NULL OR
+              raw.processing_state IN ('posted', 'ignored')
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM $tableParsedFinancialEvents review
+              JOIN $tableRawNotificationEvents review_raw
+                ON review_raw.id = review.raw_notification_event_id
+              WHERE review.raw_notification_event_id = receipt.raw_event_id
+                AND review_raw.processing_state IN ('retained', 'parsed', 'failed')
+                AND review.parse_decision IN ('provisional', 'retainOnly')
+                AND NOT EXISTS (
+                  SELECT 1 FROM $tableParsedEventLedgerLinks review_link
+                  WHERE review_link.parsed_financial_event_id = review.id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM $tableLedgerEntries review_ledger
+                  WHERE review_ledger.parsed_financial_event_id = review.id
+                )
+            )
+          ORDER BY receipt.completed_at ASC, receipt.capture_receipt_id ASC
+          LIMIT 500
+        )
+        ''',
+        [receiptCutoff],
+      );
+
+      final ignoredRaw = await txn.rawDelete(
+        '''
+        DELETE FROM $tableRawNotificationEvents
+        WHERE id IN (
+          SELECT raw.id
+          FROM $tableRawNotificationEvents raw
+          WHERE raw.processing_state = 'ignored'
+            AND raw.title IS NULL
+            AND raw.content IS NULL
+            AND raw.ingested_at < ?
+            AND NOT EXISTS (
+              SELECT 1 FROM $tableParsedFinancialEvents parsed
+              WHERE parsed.raw_notification_event_id = raw.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM $tableNotificationIngestionReceipts receipt
+              WHERE receipt.raw_event_id = raw.id
+            )
+          ORDER BY raw.ingested_at ASC, raw.id ASC
+          LIMIT 500
+        )
+        ''',
+        [ignoredRawCutoff],
+      );
+      return PrivacyRetentionPruneResult(
+        parserDiagnostics: diagnostics,
+        ingestionReceipts: receipts,
+        ignoredRawEvents: ignoredRaw,
+      );
+    });
+  }
+
   Future<int> postIngestedTransaction({
     required Transaction transaction,
     required int parsedFinancialEventId,
@@ -1781,8 +2106,7 @@ class AppDatabase {
     required LedgerEventRole eventRole,
     required String? ledgerCategory,
   }) async {
-    final db = await database;
-    return db.transaction((txn) async {
+    return _withinTransaction((txn) async {
       final transactionId = await txn.insert(
         tableTransactions,
         transaction.toMap(),
@@ -1830,7 +2154,7 @@ class AppDatabase {
     required DateTime occurredAt,
     Duration searchWindow = const Duration(days: 7),
   }) async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.rawQuery(
       '''
       SELECT
@@ -1886,7 +2210,7 @@ class AppDatabase {
     required int ledgerEntryId,
     required DuplicateAssessment assessment,
   }) async {
-    final db = await database;
+    final db = await _executor;
     await db.insert(tableParsedEventLedgerLinks, {
       'parsed_financial_event_id': parsedFinancialEventId,
       'ledger_entry_id': ledgerEntryId,
@@ -1907,7 +2231,7 @@ class AppDatabase {
   }
 
   Future<int?> getLedgerEntryIdForRawEvent(int rawEventId) async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.rawQuery(
       '''
       SELECT COALESCE(pel.ledger_entry_id, l.id) AS ledger_id
@@ -1924,6 +2248,58 @@ class AppDatabase {
       [rawEventId],
     );
     return rows.isEmpty ? null : rows.single['ledger_id'] as int;
+  }
+
+  Future<FinancialSupersessionBaseline?> getFinancialSupersessionBaseline(
+    int rawEventId,
+  ) async {
+    final db = await _executor;
+    final rows = await db.rawQuery(
+      '''
+      WITH RECURSIVE supersession_chain(raw_event_id, depth) AS (
+        SELECT ?, 0
+        UNION ALL
+        SELECT r.supersedes_event_id, chain.depth + 1
+        FROM $tableRawNotificationEvents r
+        JOIN supersession_chain chain ON r.id = chain.raw_event_id
+        WHERE r.supersedes_event_id IS NOT NULL AND chain.depth < 100
+      )
+      SELECT
+        l.id AS ledger_id,
+        l.amount_minor,
+        l.currency_code,
+        l.direction,
+        l.account_id,
+        p.reference_number
+      FROM supersession_chain chain
+      JOIN $tableParsedFinancialEvents p
+        ON p.raw_notification_event_id = chain.raw_event_id
+      LEFT JOIN $tableParsedEventLedgerLinks pel
+        ON pel.parsed_financial_event_id = p.id
+      LEFT JOIN $tableLedgerEntries l
+        ON l.id = COALESCE(pel.ledger_entry_id, (
+          SELECT direct.id
+          FROM $tableLedgerEntries direct
+          WHERE direct.parsed_financial_event_id = p.id
+          ORDER BY direct.id ASC
+          LIMIT 1
+        ))
+      WHERE l.id IS NOT NULL
+      ORDER BY chain.depth ASC, p.id DESC
+      LIMIT 1
+      ''',
+      [rawEventId],
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.single;
+    return FinancialSupersessionBaseline(
+      ledgerEntryId: row['ledger_id'] as int,
+      amountMinor: row['amount_minor'] as int,
+      currencyCode: row['currency_code'] as String,
+      direction: FinancialDirection.fromStorage(row['direction'] as String),
+      accountId: row['account_id'] as int,
+      referenceNumber: row['reference_number'] as String?,
+    );
   }
 
   Future<void> updateLedgerCategoryForParsedEvent(
@@ -1980,7 +2356,7 @@ class AppDatabase {
     required int transactionGroupId,
     required DuplicateAssessment assessment,
   }) async {
-    final db = await database;
+    final db = await _executor;
     await db.insert(tableParsedEventGroupLinks, {
       'parsed_financial_event_id': parsedFinancialEventId,
       'transaction_group_id': transactionGroupId,
@@ -2003,7 +2379,7 @@ class AppDatabase {
   Future<List<Map<String, Object?>>> getRelatedGroupCandidates({
     int? accountId,
   }) async {
-    final db = await database;
+    final db = await _executor;
     return db.rawQuery(
       '''
       SELECT
@@ -2036,7 +2412,7 @@ class AppDatabase {
     int transactionGroupId,
     TransactionGroupType groupType,
   ) async {
-    final db = await database;
+    final db = await _executor;
     await db.update(
       tableTransactionGroups,
       {
@@ -2062,9 +2438,10 @@ class AppDatabase {
   /// Returns retained, transaction-like notifications that have enough parsed
   /// evidence for the user to correct, but have not affected the ledger yet.
   Future<List<ReviewTransaction>> getTransactionsForReview() async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.rawQuery('''
       SELECT p.*, r.id raw_id, r.package_name raw_package_name,
+        r.capture_receipt_id raw_capture_receipt_id,
         r.notification_key raw_notification_key,
         r.notification_id raw_notification_id,
         r.notification_tag raw_notification_tag, r.title raw_title,
@@ -2097,6 +2474,7 @@ class AppDatabase {
           final parsed = ParsedFinancialEvent.fromMap(row);
           final raw = RawNotificationEvent.fromMap({
             'id': row['raw_id'],
+            'capture_receipt_id': row['raw_capture_receipt_id'],
             'package_name': row['raw_package_name'],
             'notification_key': row['raw_notification_key'],
             'notification_id': row['raw_notification_id'],
@@ -2530,7 +2908,7 @@ class AppDatabase {
   /// Older notification-created rows may not have [transaction_group_id]
   /// populated, so the parsed-event link is used as a migration-safe fallback.
   Future<int?> getTransactionGroupIdForLedgerEntry(int ledgerEntryId) async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.rawQuery(
       '''
       SELECT COALESCE(
@@ -2573,7 +2951,7 @@ class AppDatabase {
     required LedgerEventRole eventRole,
     required String? category,
   }) async {
-    final db = await database;
+    final db = await _executor;
     await db.update(
       tableLedgerEntries,
       {
@@ -2587,12 +2965,12 @@ class AppDatabase {
   }
 
   Future<int> createTransactionGroup(TransactionGroup group) async {
-    final db = await database;
+    final db = await _executor;
     return db.insert(tableTransactionGroups, group.toMap());
   }
 
   Future<TransactionGroup?> getTransactionGroup(int id) async {
-    final db = await database;
+    final db = await _executor;
     final rows = await db.query(
       tableTransactionGroups,
       where: 'id = ?',
@@ -2610,7 +2988,7 @@ class AppDatabase {
     required bool isInconsistent,
     String? inconsistencyReason,
   }) async {
-    final db = await database;
+    final db = await _executor;
     await db.update(
       tableTransactionGroups,
       {

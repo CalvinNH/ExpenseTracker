@@ -41,6 +41,8 @@ android {
         minSdk = flutter.minSdkVersion
         targetSdk = 35
         multiDexEnabled = true
+        testInstrumentationRunner =
+            "com.calvin.expense_tracker.NativeBehaviorTestRunner"
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
@@ -70,6 +72,9 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    // Keep JVM tests runnable in the project's supported offline build setup.
+    testImplementation("junit:junit:4.12")
 }
 
 val verifyReleaseOffline by tasks.registering {

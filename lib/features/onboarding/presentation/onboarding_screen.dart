@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:expense_tracker/app_shell.dart';
 import 'package:expense_tracker/core/database/app_database.dart';
 import 'package:expense_tracker/core/models/account.dart';
@@ -7,7 +9,6 @@ import 'package:expense_tracker/core/widgets/app_toast.dart';
 import 'package:expense_tracker/features/ingestion/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:notification_listener_service/notification_listener_service.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -16,7 +17,8 @@ class OnboardingScreen extends StatefulWidget {
   State<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
-class _OnboardingScreenState extends State<OnboardingScreen> {
+class _OnboardingScreenState extends State<OnboardingScreen>
+    with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _entries = [
     _AccountEntry(nameHint: 'Cash Wallet')..selectedType = 'Cash',
@@ -28,11 +30,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkPermissionStatus();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     for (final entry in _entries) {
       entry.dispose();
     }
@@ -40,11 +44,21 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _checkPermissionStatus() async {
-    final granted = await NotificationListenerService.isPermissionGranted();
+    final granted = await NotificationService.hasNotificationPermission();
+    if (granted) {
+      await NotificationService.handleAppResumed();
+    }
     if (mounted) {
       setState(() {
         _isNotificationPermissionGranted = granted;
       });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_checkPermissionStatus());
     }
   }
 
@@ -149,27 +163,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _requestNotificationPermission() async {
-    bool isGranted = await NotificationListenerService.isPermissionGranted();
+    final isGranted = await NotificationService.hasNotificationPermission();
 
     if (!isGranted) {
-      isGranted = await NotificationListenerService.requestPermission();
+      await NotificationService.requestNotificationPermission();
+      if (mounted) {
+        AppToast.show(
+          context,
+          'Enable Expense Tracker in Android settings, then return here.',
+        );
+      }
+      return;
     }
 
-    if (isGranted) {
-      await NotificationService.initialize();
-    }
-
+    await NotificationService.handleAppResumed();
     if (mounted) {
-      setState(() {
-        _isNotificationPermissionGranted = isGranted;
-      });
-      AppToast.show(
-        context,
-        isGranted
-            ? 'Permission Granted! Auto-tracking is active.'
-            : 'Permission Denied. The app needs this to track expenses!',
-        isError: !isGranted,
-      );
+      AppToast.show(context, 'Auto-tracking is active.');
     }
   }
 

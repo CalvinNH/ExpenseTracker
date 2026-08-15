@@ -39,7 +39,6 @@ dependencies:
   flutter_secure_storage: ^10.2.0
   path: ^1.9.0
   collection: ^1.19.1
-  notification_listener_service: ^1.0.0
   fl_chart: ^1.2.0
   path_provider: ^2.1.2
   share_plus: ^13.3.0
@@ -79,6 +78,7 @@ flutter:
     - assets/icon/account_card.png
     - assets/icon/account_cash.png
     - assets/data/institutions_v1.json
+    - assets/data/notification_sources_v1.json
     - assets/fonts/inter/OFL.txt
 
   fonts:

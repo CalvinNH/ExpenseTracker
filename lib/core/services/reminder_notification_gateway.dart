@@ -58,7 +58,7 @@ final class PluginReminderNotificationGateway
       tz.setLocalLocation(tz.getLocation(deviceTimeZone));
 
       const androidSettings = AndroidInitializationSettings(
-        '@mipmap/ic_launcher',
+        '@mipmap/launcher_icon',
       );
       const darwinSettings = DarwinInitializationSettings(
         requestAlertPermission: false,
@@ -120,7 +120,7 @@ final class PluginReminderNotificationGateway
           'Reminds you to manually add any missed transactions of the day',
       importance: Importance.high,
       priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+      icon: '@mipmap/launcher_icon',
     );
     const details = NotificationDetails(
       android: androidDetails,

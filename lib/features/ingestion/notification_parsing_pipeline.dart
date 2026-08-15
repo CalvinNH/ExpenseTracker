@@ -543,6 +543,15 @@ class DefaultMerchantExtractor implements MerchantExtractor {
       ),
       '',
     );
+    // Keep the notification's merchant text for auditability, but normalize
+    // known processor variants (for example, "SWIGGY PVT LTD GROCE") to one
+    // stable value for grouping and categorization.
+    for (final entry in aliases.entries) {
+      if (_has(normalized, '\\b${entry.key}\\b')) {
+        normalized = entry.value;
+        break;
+      }
+    }
     return MerchantEvidence(
       raw: raw.trim(),
       normalized: normalized,
@@ -559,24 +568,67 @@ class DefaultMerchantExtractor implements MerchantExtractor {
 class DefaultTransactionTimeExtractor implements TransactionTimeExtractor {
   @override
   ExtractedField<DateTime?> extract(NormalizedNotification input) {
+    // Card alerts from HDFC and other issuers can use an ISO-like timestamp
+    // with colons between the date and time: 2026-08-04:21:50:19.
+    final isoMatch = RegExp(
+      r'\b(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s:]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?',
+      caseSensitive: false,
+    ).firstMatch(input.originalText);
+    if (isoMatch != null) {
+      return _dateTime(
+        year: int.parse(isoMatch.group(1)!),
+        month: int.parse(isoMatch.group(2)!),
+        day: int.parse(isoMatch.group(3)!),
+        hour: int.tryParse(isoMatch.group(4) ?? '') ?? 0,
+        minute: int.tryParse(isoMatch.group(5) ?? '') ?? 0,
+        second: int.tryParse(isoMatch.group(6) ?? '') ?? 0,
+        confidence: 0.95,
+      );
+    }
     final match = RegExp(
-      r'\b(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s+(?:at\s+)?(\d{1,2}):(\d{2}))?',
+      // Bank SMS messages frequently use a comma between the date and time,
+      // for example "05-08-26, 21:28:31".  Treat it like the space and
+      // "at" variants, and preserve seconds when they are present.
+      r'\b(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s*(?:,|at)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?)?',
       caseSensitive: false,
     ).firstMatch(input.originalText);
     if (match == null) return const ExtractedField(null, 0);
     final yearValue = int.parse(match.group(3)!);
-    final year = yearValue < 100 ? 2000 + yearValue : yearValue;
     try {
-      return ExtractedField(
-        DateTime(
-          year,
-          int.parse(match.group(2)!),
-          int.parse(match.group(1)!),
-          int.tryParse(match.group(4) ?? '') ?? 0,
-          int.tryParse(match.group(5) ?? '') ?? 0,
-        ),
-        0.85,
+      return _dateTime(
+        year: yearValue < 100 ? 2000 + yearValue : yearValue,
+        month: int.parse(match.group(2)!),
+        day: int.parse(match.group(1)!),
+        hour: int.tryParse(match.group(4) ?? '') ?? 0,
+        minute: int.tryParse(match.group(5) ?? '') ?? 0,
+        second: int.tryParse(match.group(6) ?? '') ?? 0,
+        confidence: 0.85,
       );
+    } on ArgumentError {
+      return const ExtractedField(null, 0);
+    }
+  }
+
+  ExtractedField<DateTime?> _dateTime({
+    required int year,
+    required int month,
+    required int day,
+    required int hour,
+    required int minute,
+    required int second,
+    required double confidence,
+  }) {
+    try {
+      final value = DateTime(year, month, day, hour, minute, second);
+      if (value.year != year ||
+          value.month != month ||
+          value.day != day ||
+          value.hour != hour ||
+          value.minute != minute ||
+          value.second != second) {
+        return const ExtractedField(null, 0);
+      }
+      return ExtractedField(value, confidence);
     } on ArgumentError {
       return const ExtractedField(null, 0);
     }
@@ -799,8 +851,8 @@ class NotificationParsingPipeline {
         'instrument.default.v1',
         'institution.default.v1',
         'reference.default.v1',
-        'merchant.default.v1',
-        'transaction_time.default.v1',
+        'merchant.default.v2',
+        'transaction_time.default.v2',
         'confidence.default.v1',
         'validator.default.v1',
       ]),

@@ -145,7 +145,9 @@ void main() {
       isNot(contains('android.permission.SCHEDULE_EXACT_ALARM')),
     );
     expect(gradle, contains('desugar_jdk_libs:2.1.4'));
-    expect(resourceKeep, contains('@mipmap/ic_launcher'));
+    expect(resourceKeep, contains('@mipmap/launcher_icon'));
+    expect(gateway, contains("'@mipmap/launcher_icon'"));
+    expect(gateway, isNot(contains('@mipmap/ic_launcher')));
     expect(gateway, contains('requestNotificationsPermission'));
     expect(gateway, contains('zonedSchedule'));
     expect(gateway, contains('DateTimeComponents.time'));
@@ -159,17 +161,33 @@ void main() {
     expect(androidActivity, contains('expense_tracker/device_timezone'));
   });
 
-  test('native recovery queue is bounded by count and age', () async {
-    final receiver = await File(
-      'android/app/src/main/kotlin/com/calvin/expense_tracker/'
-      'NotificationQueueReceiver.kt',
-    ).readAsString();
+  test(
+    'native capture inbox encrypts and acknowledges before deletion',
+    () async {
+      final inbox = await File(
+        'android/app/src/main/kotlin/com/calvin/expense_tracker/'
+        'NativeNotificationInbox.kt',
+      ).readAsString();
+      final listener = await File(
+        'android/app/src/main/kotlin/com/calvin/expense_tracker/'
+        'TransactionNotificationListener.kt',
+      ).readAsString();
 
-    expect(receiver, contains('MAX_QUEUE_SIZE = 50'));
-    expect(
-      receiver,
-      contains('MAX_QUEUE_AGE_MILLIS = 24L * 60L * 60L * 1000L'),
-    );
-    expect(receiver, contains('receivedAt - MAX_QUEUE_AGE_MILLIS'));
-  });
+      expect(inbox, contains('AES/GCM/NoPadding'));
+      expect(inbox, contains('AndroidKeyStore'));
+      expect(inbox, contains("state = 'leased'"));
+      expect(inbox, contains('fun acknowledge'));
+      expect(inbox, contains('fun status'));
+      expect(inbox, contains('encrypted_payload'));
+      expect(inbox, isNot(contains('pending_notifications')));
+      expect(listener, contains('Notification.EXTRA_BIG_TEXT'));
+      expect(listener, contains('Notification.EXTRA_TEXT_LINES'));
+      expect(listener, contains('Notification.EXTRA_MESSAGES'));
+      expect(listener, contains('onNotificationRemoved'));
+      expect(listener, contains('return null'));
+      expect(listener, isNot(contains('recordCapacityDrop')));
+      expect(listener, isNot(contains('recordCapacityEviction')));
+      expect(listener, contains('recordStorageFailure'));
+    },
+  );
 }

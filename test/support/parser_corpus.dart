@@ -15,7 +15,12 @@ class ParserCorpusCase {
     this.status,
     this.amountMinor,
     this.instrumentLastFour,
+    this.merchantNormalized,
+    this.transactionOccurredAt,
     required this.autoPostEligible,
+    this.category = 'legacy',
+    this.expectedDecision,
+    this.expectedSourceClass,
   });
 
   final String id;
@@ -27,7 +32,12 @@ class ParserCorpusCase {
   final FinancialEventStatus? status;
   final int? amountMinor;
   final String? instrumentLastFour;
+  final String? merchantNormalized;
+  final DateTime? transactionOccurredAt;
   final bool autoPostEligible;
+  final String category;
+  final ParseDecision? expectedDecision;
+  final String? expectedSourceClass;
 
   factory ParserCorpusCase.fromJson(Map<String, Object?> json) =>
       ParserCorpusCase(
@@ -44,7 +54,18 @@ class ParserCorpusCase {
             : FinancialEventStatus.fromStorage(json['status']! as String),
         amountMinor: json['amountMinor'] as int?,
         instrumentLastFour: json['instrumentLastFour'] as String?,
+        merchantNormalized: json['merchantNormalized'] as String?,
+        transactionOccurredAt: json['transactionOccurredAt'] == null
+            ? null
+            : DateTime.parse(json['transactionOccurredAt']! as String),
         autoPostEligible: json['autoPostEligible']! as bool,
+        category: json['category'] as String? ?? 'legacy',
+        expectedDecision: json['expectedDecision'] == null
+            ? null
+            : ParseDecision.values.firstWhere(
+                (value) => value.name == json['expectedDecision'],
+              ),
+        expectedSourceClass: json['expectedSourceClass'] as String?,
       );
 }
 

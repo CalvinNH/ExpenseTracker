@@ -17,6 +17,12 @@ void main() {
   runApp(const ExpenseTrackerApp());
 }
 
+/// Fixed Android background-engine entrypoint. It opens no UI and subscribes
+/// to no foreground event stream; native completion is reported exactly once.
+@pragma('vm:entry-point')
+Future<void> notificationWorkerEntrypoint() =>
+    NotificationService.runHeadlessWorker();
+
 class ExpenseTrackerApp extends StatelessWidget {
   const ExpenseTrackerApp({super.key});
 
@@ -37,13 +43,27 @@ class _AppEntry extends StatefulWidget {
   State<_AppEntry> createState() => _AppEntryState();
 }
 
-class _AppEntryState extends State<_AppEntry> {
+class _AppEntryState extends State<_AppEntry> with WidgetsBindingObserver {
   late Future<Widget> _initialScreenFuture;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadInitialScreen();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(NotificationService.handleAppResumed());
+    }
   }
 
   void _loadInitialScreen() {
@@ -54,6 +74,11 @@ class _AppEntryState extends State<_AppEntry> {
     final database = AppDatabase.instance;
     final accounts = await database.getAllAccounts();
     await database.redactNonReviewRawNotificationPayloads();
+    try {
+      await database.prunePrivacyRetention();
+    } catch (_) {
+      // Retention is retried opportunistically and must never block startup.
+    }
     await NotificationLogService.instance.enforcePrivacyPolicy();
     // Do not let notification ingestion race encryption migration or schema
     // validation during cold start.

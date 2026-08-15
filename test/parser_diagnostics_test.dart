@@ -21,7 +21,7 @@ void main() {
 
   tearDown(() => AppDatabase.instance.close());
 
-  test('ingestion records value-free local parser diagnostics', () async {
+  test('ingestion exports coarse diagnostics without local evidence', () async {
     const rawAmount = '₹1,234.56';
     const rawAccount = '9988';
     const rawReference = 'ABC123456789';
@@ -47,7 +47,7 @@ void main() {
     expect(diagnostic.extractorsUsed, contains(startsWith('classifier.')));
     expect(diagnostic.decision, isNotEmpty);
     expect(diagnostic.confidence, inInclusiveRange(0, 1));
-    expect(diagnostic.sourceCategory, 'defaultSmsPackage');
+    expect(diagnostic.sourceCategory, 'knownNonDefaultSmsPackage');
     expect(diagnostic.structuralFingerprint, contains('<AMOUNT>'));
 
     final exported = jsonEncode(diagnostic.toExportMap());
@@ -60,24 +60,40 @@ void main() {
     ]) {
       expect(exported.toLowerCase(), isNot(contains(secret.toLowerCase())));
     }
+    expect(
+      diagnostic.toExportMap().keys.toSet(),
+      {
+        'observedDay',
+        'parserVersion',
+        'decision',
+        'confidenceBand',
+        'failureCategory',
+        'sourceCategory',
+      },
+    );
+    expect(exported, isNot(contains('structuralFingerprint')));
+    expect(exported, isNot(contains('extractorsUsed')));
   });
 
-  test('redactor removes sensitive values from defensive fallback shapes', () {
-    const raw =
-        'rs 930.25 debited from account xx4455 at Private Clinic on today '
-        'vpa patient@upi ref ZXCV123456';
-    final redacted = ParserDiagnosticRedactor.redactFingerprint(raw);
+  test('diagnostic export maps unknown free-form values to fixed buckets', () {
+    const secret = 'Private Song Title and Merchant 9988';
+    final exported = ParserDiagnostic(
+      observedAt: DateTime.utc(2026, 8, 2, 17, 34, 51),
+      parserVersion: 3,
+      extractorsUsed: const ['attacker-controlled-extractor-$secret'],
+      decision: secret,
+      confidence: .72,
+      failureCode: secret,
+      sourceCategory: secret,
+      structuralFingerprint: secret,
+    ).toExportMap();
 
-    expect(redacted, contains('<AMOUNT>'));
-    expect(redacted, contains('<ACCOUNT>'));
-    expect(redacted, contains('<VPA>'));
-    expect(redacted, contains('<REFERENCE>'));
-    expect(redacted, contains('<MERCHANT>'));
-    expect(redacted, isNot(contains('930.25')));
-    expect(redacted, isNot(contains('4455')));
-    expect(redacted, isNot(contains('patient@upi')));
-    expect(redacted, isNot(contains('ZXCV123456')));
-    expect(redacted, isNot(contains('Private Clinic')));
+    expect(exported['observedDay'], '2026-08-02');
+    expect(exported['decision'], 'unknown');
+    expect(exported['confidenceBand'], 'medium');
+    expect(exported['failureCategory'], 'other');
+    expect(exported['sourceCategory'], 'unknownPackage');
+    expect(jsonEncode(exported), isNot(contains(secret)));
   });
 
   test('diagnostics export exists only behind an explicit settings action', () {
@@ -87,6 +103,7 @@ void main() {
     expect(settings, contains("'Export Parser Diagnostics'"));
     expect(settings, contains('onTap: _exportParserDiagnostics'));
     expect(settings, contains('diagnostic.toExportMap()'));
+    expect(settings, contains("'schemaVersion': 3"));
     expect(settings, contains('if (await file.exists()) await file.delete()'));
   });
 

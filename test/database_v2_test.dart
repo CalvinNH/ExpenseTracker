@@ -54,13 +54,21 @@ void main() {
     expect(tableNames, contains(AppDatabase.tableParsedEventGroupLinks));
     expect(tableNames, contains(AppDatabase.tableNotificationTemplates));
     expect(tableNames, contains(AppDatabase.tableParserDiagnostics));
+    expect(
+      tableNames,
+      contains(AppDatabase.tableNotificationIngestionReceipts),
+    );
 
     final rawColumns = await db.rawQuery(
       'PRAGMA table_info(${AppDatabase.tableRawNotificationEvents})',
     );
     expect(
       rawColumns.map((row) => row['name']),
-      containsAll(['exact_duplicate_of_event_id', 'duplicate_rationale']),
+      containsAll([
+        'capture_receipt_id',
+        'exact_duplicate_of_event_id',
+        'duplicate_rationale',
+      ]),
     );
     final parsedColumns = await db.rawQuery(
       'PRAGMA table_info(${AppDatabase.tableParsedFinancialEvents})',
@@ -104,6 +112,7 @@ void main() {
     final indexNames = indexes.map((row) => row['name']).toSet();
     expect(indexNames, contains('idx_raw_notification_payload_hash'));
     expect(indexNames, contains('idx_raw_notification_package_posted'));
+    expect(indexNames, contains('idx_raw_capture_receipt_id'));
     expect(indexNames, contains('idx_parsed_reference_number'));
     expect(indexNames, contains('idx_ledger_account_occurred'));
     expect(indexNames, contains('idx_ledger_transaction_group'));
@@ -221,6 +230,78 @@ void main() {
       );
     },
   );
+
+  test('version 11 adds a unique nullable native capture receipt', () async {
+    final db = await AppDatabase.instance.database;
+    await db.execute(
+      'DROP TABLE ${AppDatabase.tableNotificationIngestionReceipts}',
+    );
+    await db.execute('DROP INDEX idx_raw_capture_receipt_id');
+    await db.execute(
+      'ALTER TABLE raw_notification_events DROP COLUMN capture_receipt_id',
+    );
+    await db.insert('raw_notification_events', {
+      'package_name': 'com.example.legacy',
+      'posted_at': DateTime.utc(2026, 8, 1).toIso8601String(),
+      'ingested_at': DateTime.utc(2026, 8, 1, 0, 0, 1).toIso8601String(),
+      'payload_hash': 'legacy-before-receipts',
+      'parser_version': 3,
+      'processing_state': 'retained',
+    });
+    await db.setVersion(11);
+    await AppDatabase.instance.close();
+
+    final migrated = await AppDatabase.instance.database;
+    expect(await migrated.getVersion(), AppDatabase.databaseVersion);
+    final columns = await migrated.rawQuery(
+      'PRAGMA table_info(raw_notification_events)',
+    );
+    expect(columns.map((row) => row['name']), contains('capture_receipt_id'));
+    final receiptTables = await migrated.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: "type = 'table' AND name = ?",
+      whereArgs: [AppDatabase.tableNotificationIngestionReceipts],
+    );
+    expect(receiptTables, hasLength(1));
+    final legacy =
+        (await AppDatabase.instance.getAllRawNotificationEvents()).single;
+    expect(legacy.captureReceiptId, isNull);
+
+    final now = DateTime.utc(2026, 8, 2);
+    RawNotificationEvent event({String? receipt, required String hash}) =>
+        RawNotificationEvent(
+          captureReceiptId: receipt,
+          packageName: 'com.example.sms',
+          postedAt: now,
+          ingestedAt: now,
+          payloadHash: hash,
+          parserVersion: 3,
+          processingState: RawNotificationProcessingState.retained,
+        );
+
+    final receiptId = await AppDatabase.instance.createRawNotificationEvent(
+      event(receipt: 'native-inbox-1', hash: 'receipt-one'),
+    );
+    expect(
+      (await AppDatabase.instance.getRawNotificationEvent(
+        receiptId,
+      ))?.captureReceiptId,
+      'native-inbox-1',
+    );
+    expect(
+      () => AppDatabase.instance.createRawNotificationEvent(
+        event(receipt: 'native-inbox-1', hash: 'receipt-conflict'),
+      ),
+      throwsA(isA<DatabaseException>()),
+    );
+    await AppDatabase.instance.createRawNotificationEvent(
+      event(hash: 'legacy-null-one'),
+    );
+    await AppDatabase.instance.createRawNotificationEvent(
+      event(hash: 'legacy-null-two'),
+    );
+  });
 
   test('version 1 upgrade preserves account and transaction data', () async {
     final path = AppDatabase.databasePathOverrideForTesting!;

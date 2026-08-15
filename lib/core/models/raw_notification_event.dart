@@ -3,6 +3,7 @@ import 'package:expense_tracker/core/models/financial_enums.dart';
 class RawNotificationEvent {
   const RawNotificationEvent({
     this.id,
+    this.captureReceiptId,
     required this.packageName,
     this.notificationKey,
     this.notificationId,
@@ -21,6 +22,7 @@ class RawNotificationEvent {
   });
 
   final int? id;
+  final String? captureReceiptId;
   final String packageName;
   final String? notificationKey;
   final int? notificationId;
@@ -39,6 +41,7 @@ class RawNotificationEvent {
 
   Map<String, Object?> toMap() => {
     if (id != null) 'id': id,
+    'capture_receipt_id': captureReceiptId,
     'package_name': packageName,
     'notification_key': notificationKey,
     'notification_id': notificationId,
@@ -59,6 +62,7 @@ class RawNotificationEvent {
   factory RawNotificationEvent.fromMap(Map<String, Object?> map) {
     return RawNotificationEvent(
       id: map['id'] as int?,
+      captureReceiptId: map['capture_receipt_id'] as String?,
       packageName: map['package_name'] as String,
       notificationKey: map['notification_key'] as String?,
       notificationId: map['notification_id'] as int?,

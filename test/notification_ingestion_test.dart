@@ -29,6 +29,7 @@ void main() {
 
   NotificationEnvelope envelope({
     required String packageName,
+    String? captureReceiptId,
     int notificationId = 10,
     String title = 'Transaction alert',
     String content = 'INR 100.00 debited from HDFC Bank A/c XX1234 at Cafe.',
@@ -36,6 +37,7 @@ void main() {
   }) {
     return NotificationEnvelope(
       packageName: packageName,
+      captureReceiptId: captureReceiptId,
       notificationId: notificationId,
       title: title,
       content: content,
@@ -56,6 +58,22 @@ void main() {
     );
   }
 
+  NotificationIngestionProcessor trustedSmsProcessor({
+    IngestionFaultInjector? faultInjectorForTesting,
+  }) => NotificationIngestionProcessor(
+    sourcePolicy: NotificationSourcePolicy(
+      defaultSmsPackage: 'com.google.android.apps.messaging',
+    ),
+    faultInjectorForTesting: faultInjectorForTesting,
+  );
+
+  Future<int> rowCount(String table) async {
+    final rows = await (await AppDatabase.instance.database).rawQuery(
+      'SELECT COUNT(*) AS row_count FROM $table',
+    );
+    return (rows.single['row_count'] as num).toInt();
+  }
+
   test('source policy accepts SMS, bank, and wallet packages', () {
     final policy = NotificationSourcePolicy(
       defaultSmsPackage: 'com.example.default.sms',
@@ -63,6 +81,10 @@ void main() {
     expect(
       policy.classify('com.example.default.sms'),
       NotificationSourceClass.defaultSmsPackage,
+    );
+    expect(
+      policy.classify('com.google.android.apps.messaging'),
+      NotificationSourceClass.knownNonDefaultSmsPackage,
     );
     expect(
       policy.classify('com.snapwork.hdfc'),
@@ -77,6 +99,10 @@ void main() {
       NotificationSourceClass.knownMerchantPackage,
     );
     expect(
+      policy.classify('com.google.android.gm'),
+      NotificationSourceClass.bestEffortEmailPackage,
+    );
+    expect(
       policy.classify('com.android.systemui'),
       NotificationSourceClass.ignoredPackage,
     );
@@ -85,6 +111,46 @@ void main() {
       NotificationSourceClass.unknownPackage,
     );
   });
+
+  test('known SMS package remains non-default without a reported default', () {
+    expect(
+      NotificationSourcePolicy().classify('com.samsung.android.messaging'),
+      NotificationSourceClass.knownNonDefaultSmsPackage,
+    );
+    expect(
+      NotificationSourcePolicy(
+        defaultSmsPackage: '',
+      ).classify('com.samsung.android.messaging'),
+      NotificationSourceClass.knownNonDefaultSmsPackage,
+    );
+  });
+
+  test('known non-default SMS package cannot auto-post', () async {
+    await createHdfcAccount();
+    final result = await NotificationIngestionProcessor(
+      sourcePolicy: NotificationSourcePolicy(
+        defaultSmsPackage: 'com.google.android.apps.messaging',
+      ),
+    ).ingest(envelope(packageName: 'com.samsung.android.messaging'));
+
+    expect(result.disposition, IngestionDisposition.retained);
+    expect(result.diagnosticCode, 'secondary_source_review_required');
+    expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+  });
+
+  test(
+    'known SMS package cannot auto-post when default is unavailable',
+    () async {
+      await createHdfcAccount();
+      final result = await NotificationIngestionProcessor(
+        sourcePolicy: NotificationSourcePolicy(),
+      ).ingest(envelope(packageName: 'com.samsung.android.messaging'));
+
+      expect(result.disposition, IngestionDisposition.retained);
+      expect(result.diagnosticCode, 'secondary_source_review_required');
+      expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+    },
+  );
 
   test('known SMS package is persisted and posted', () async {
     await createHdfcAccount();
@@ -95,7 +161,10 @@ void main() {
     );
 
     final result = await processor.ingest(
-      envelope(packageName: 'com.example.default.sms'),
+      envelope(
+        packageName: 'com.example.default.sms',
+        captureReceiptId: 'native-capture-receipt-1',
+      ),
     );
 
     expect(result.disposition, IngestionDisposition.posted);
@@ -105,7 +174,8 @@ void main() {
     expect(rawEvents.single.content, isNull);
     expect(rawEvents.single.payloadHash, isNotEmpty);
     expect(rawEvents.single.packageName, 'com.example.default.sms');
-    expect(rawEvents.single.parserVersion, 2);
+    expect(rawEvents.single.captureReceiptId, 'native-capture-receipt-1');
+    expect(rawEvents.single.parserVersion, 3);
     final parsed = await AppDatabase.instance.getParsedFinancialEvent(
       result.parsedFinancialEventId!,
     );
@@ -128,6 +198,90 @@ void main() {
     expect(result.disposition, IngestionDisposition.posted);
     expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
   });
+
+  test(
+    'resolved primary account cannot upgrade a provisional parser decision',
+    () async {
+      await createHdfcAccount();
+      final processor = NotificationIngestionProcessor(
+        parsingPipeline: NotificationParsingPipeline(
+          validator: const _AlwaysProvisionalValidator(),
+        ),
+      );
+
+      final result = await processor.ingest(
+        envelope(packageName: 'com.snapwork.hdfc'),
+      );
+      final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+        result.parsedFinancialEventId!,
+      );
+
+      expect(result.disposition, IngestionDisposition.provisional);
+      expect(parsed?.parseDecision, ParseDecision.provisional);
+      expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+    },
+  );
+
+  test(
+    'auto-created provisional account never receives an auto-post',
+    () async {
+      final result = await trustedSmsProcessor().ingest(
+        envelope(packageName: 'com.google.android.apps.messaging'),
+      );
+
+      final accounts = await AppDatabase.instance.getAllAccounts();
+      expect(accounts, hasLength(1));
+      expect(accounts.single.isProvisional, isTrue);
+      expect(result.disposition, IngestionDisposition.provisional);
+      expect(result.diagnosticCode, 'account_confirmation_required');
+      expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+    },
+  );
+
+  test(
+    'HDFC card spent alert posts from SMS with card and ISO timestamp',
+    () async {
+      final accountId = await AppDatabase.instance.createAccount(
+        Account(
+          displayName: 'HDFC Credit Card - 2613',
+          institutionId: 'hdfc',
+          accountType: AccountType.creditCard,
+          lastFour: '2613',
+        ),
+      );
+      final processor = NotificationIngestionProcessor(
+        sourcePolicy: NotificationSourcePolicy(
+          defaultSmsPackage: 'com.google.android.apps.messaging',
+        ),
+      );
+
+      final result = await processor.ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          notificationId: 2613,
+          title: 'HDFC Bank',
+          content:
+              'Spent Rs.441 On HDFC Bank Card 2613 At SWIGGY PVT LTD GROCE '
+              'On 2026-08-04:21:50:19.Not You? To Block+Reissue Call '
+              '18002586161/SMS BLOCK CC 2613 to 7308080808',
+        ),
+      );
+
+      expect(result.disposition, IngestionDisposition.posted);
+      final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+        result.parsedFinancialEventId!,
+      );
+      expect(parsed?.amountMinor, 44100);
+      expect(parsed?.instrumentLastFour, '2613');
+      expect(parsed?.merchantNormalized, 'Swiggy');
+      expect(parsed?.transactionOccurredAt, DateTime(2026, 8, 4, 21, 50, 19));
+      final transactions = await AppDatabase.instance.getAllTransactions();
+      expect(transactions, hasLength(1));
+      expect(transactions.single.accountId, accountId);
+      expect(transactions.single.amount, 441);
+      expect(transactions.single.timestamp, DateTime(2026, 8, 4, 21, 50, 19));
+    },
+  );
 
   test(
     'injected classifier provenance is stored but validation remains authoritative',
@@ -180,6 +334,40 @@ void main() {
     expect(result.disposition, IngestionDisposition.posted);
     expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
   });
+
+  test(
+    'email and merchant evidence is retain-only and never auto-posts',
+    () async {
+      final accountId = await createHdfcAccount();
+      final processor = NotificationIngestionProcessor();
+
+      for (final packageName in <String>[
+        'com.google.android.gm',
+        'com.application.zomato',
+      ]) {
+        final result = await processor.ingest(
+          envelope(
+            packageName: packageName,
+            notificationId: packageName.hashCode,
+          ),
+        );
+
+        expect(result.disposition, IngestionDisposition.retained);
+        expect(result.diagnosticCode, 'secondary_source_review_required');
+        final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+          result.parsedFinancialEventId!,
+        );
+        expect(parsed?.parseDecision, ParseDecision.retainOnly);
+      }
+      expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+      expect(await AppDatabase.instance.getParsedEventLedgerLinks(), isEmpty);
+      expect(await AppDatabase.instance.getAllAccounts(), hasLength(1));
+      expect(
+        (await AppDatabase.instance.getAccount(accountId))?.currentBalance,
+        1000,
+      );
+    },
+  );
 
   test('unknown source without stronger evidence is retained', () async {
     await AppDatabase.instance.createAccount(
@@ -270,7 +458,7 @@ void main() {
   );
 
   test(
-    'shell-injected wallet notification with a transaction ID posts safely',
+    'Paytm wallet notification with a transaction ID posts safely',
     () async {
       await AppDatabase.instance.createAccount(
         Account(
@@ -282,7 +470,7 @@ void main() {
       );
       final result = await NotificationIngestionProcessor().ingest(
         envelope(
-          packageName: 'com.android.shell',
+          packageName: 'net.one97.paytm',
           title: 'Paytm',
           content: 'Paid Rs.160 to Tea Stall. Transaction ID: 2026072911',
         ),
@@ -292,6 +480,27 @@ void main() {
       expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
     },
   );
+
+  test('shell-injected notification remains unknown and retain-only', () async {
+    await AppDatabase.instance.createAccount(
+      Account(
+        displayName: 'Paytm Wallet',
+        institutionId: 'paytm_wallet',
+        accountType: AccountType.wallet,
+        openingBalanceMinor: 10000,
+      ),
+    );
+    final result = await NotificationIngestionProcessor().ingest(
+      envelope(
+        packageName: 'com.android.shell',
+        title: 'Paytm',
+        content: 'Paid Rs.160 to Tea Stall. Transaction ID: 2026072911',
+      ),
+    );
+
+    expect(result.disposition, IngestionDisposition.retained);
+    expect(await AppDatabase.instance.getAllTransactions(), isEmpty);
+  });
 
   test(
     'explicitly ignored package is rejected without raw persistence',
@@ -414,7 +623,7 @@ void main() {
   );
 
   test('dismissed review redacts text and cannot be posted', () async {
-    final result = await NotificationIngestionProcessor().ingest(
+    final result = await trustedSmsProcessor().ingest(
       envelope(
         packageName: 'com.google.android.apps.messaging',
         content: 'Transaction INR 300 at Cinema completed.',
@@ -453,7 +662,7 @@ void main() {
   });
 
   test('reviewed refund uses refund lifecycle instead of income', () async {
-    final result = await NotificationIngestionProcessor().ingest(
+    final result = await trustedSmsProcessor().ingest(
       envelope(
         packageName: 'com.google.android.apps.messaging',
         content: 'Refund INR 100.00 credited from Cafe. Ref REVIEWREFUND123.',
@@ -502,7 +711,7 @@ void main() {
     'reviewed refund with the same reference updates its purchase group',
     () async {
       final accountId = await createHdfcAccount();
-      final processor = NotificationIngestionProcessor();
+      final processor = trustedSmsProcessor();
       await processor.ingest(
         envelope(
           packageName: 'com.snapwork.hdfc',
@@ -560,7 +769,7 @@ void main() {
 
   test('identical notification is not processed twice', () async {
     await createHdfcAccount();
-    final processor = NotificationIngestionProcessor();
+    final processor = trustedSmsProcessor();
     final notification = envelope(
       packageName: 'com.google.android.apps.messaging',
     );
@@ -615,6 +824,74 @@ void main() {
       hasLength(2),
     );
   });
+
+  test(
+    'Axis SMS and email with a comma-separated timestamp share one ledger',
+    () async {
+      final accountId = await AppDatabase.instance.createAccount(
+        Account(
+          displayName: 'Axis Savings XX8075',
+          institutionId: 'axis',
+          accountType: AccountType.bankAccount,
+          lastFour: '8075',
+        ),
+      );
+      final processor = NotificationIngestionProcessor(
+        sourcePolicy: NotificationSourcePolicy(
+          defaultSmsPackage: 'com.google.android.apps.messaging',
+        ),
+      );
+      const sms = '''INR 96.00 debited
+A/c no. XX8075
+05-08-26, 21:28:31
+UPI/P2A/658347613288/MAHAVEER SINGH
+Not you? SMS BLOCKUPI Cust ID to 919951860002
+Axis Bank''';
+      const email = '''Dear Calvin Noronha,
+Amount Debited: INR 96.00
+Account Number: XX8075
+Date & Time: 05-08-26, 21:28:31 IST
+Axis Bank''';
+
+      final first = await processor.ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          notificationId: 96,
+          title: 'Axis Bank',
+          content: sms,
+        ),
+      );
+      final balanceAfterPrimary = (await AppDatabase.instance.getAccount(
+        accountId,
+      ))!.currentBalance;
+      final second = await processor.ingest(
+        envelope(
+          packageName: 'com.google.android.gm',
+          notificationId: 97,
+          title: 'Axis Bank',
+          content: email,
+        ),
+      );
+
+      expect(first.disposition, IngestionDisposition.posted);
+      expect(second.disposition, IngestionDisposition.ledgerDuplicate);
+      expect(second.duplicateConfidence, greaterThanOrEqualTo(.85));
+      expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+      expect(await AppDatabase.instance.getAllAccounts(), hasLength(1));
+      expect(
+        (await AppDatabase.instance.getAccount(accountId))?.currentBalance,
+        balanceAfterPrimary,
+      );
+      expect(
+        await AppDatabase.instance.getParsedEventLedgerLinks(),
+        hasLength(2),
+      );
+      final parsed = await AppDatabase.instance.getParsedFinancialEvent(
+        second.parsedFinancialEventId!,
+      );
+      expect(parsed?.transactionOccurredAt, DateTime(2026, 8, 5, 21, 28, 31));
+    },
+  );
 
   test('two real INR 1000 transactions within 30 seconds both post', () async {
     await createHdfcAccount();
@@ -791,7 +1068,7 @@ void main() {
       );
       final reversal = await processor.ingest(
         envelope(
-          packageName: 'com.android.shell',
+          packageName: 'com.snapwork.hdfc',
           notificationId: 40,
           content:
               'INR 700.00 transaction at Cafe was reversed on card XX1234. Ref: TXN/290711',
@@ -922,29 +1199,224 @@ void main() {
     expect(summary.netExpensesMinor, 0);
   });
 
+  for (final checkpoint in IngestionFaultCheckpoint.values) {
+    test(
+      'receipt transaction rolls back and retries at ${checkpoint.name}',
+      () async {
+        final accountId = await createHdfcAccount();
+        var injected = false;
+        final processor = trustedSmsProcessor(
+          faultInjectorForTesting: (observed) {
+            if (!injected && observed == checkpoint) {
+              injected = true;
+              throw StateError('injected-${checkpoint.name}');
+            }
+          },
+        );
+        final captured = envelope(
+          packageName: 'com.google.android.apps.messaging',
+          captureReceiptId: 'fault-receipt-${checkpoint.name}',
+        );
+
+        await expectLater(
+          processor.ingest(captured),
+          throwsA(isA<StateError>()),
+        );
+        expect(await rowCount(AppDatabase.tableRawNotificationEvents), 0);
+        expect(await rowCount(AppDatabase.tableParsedFinancialEvents), 0);
+        expect(await rowCount(AppDatabase.tableTransactionGroups), 0);
+        expect(await rowCount(AppDatabase.tableLedgerEntries), 0);
+        expect(await rowCount(AppDatabase.tableParsedEventGroupLinks), 0);
+        expect(await rowCount(AppDatabase.tableParsedEventLedgerLinks), 0);
+        expect(await rowCount(AppDatabase.tableTransactions), 0);
+        expect(await rowCount(AppDatabase.tableNotificationTemplates), 0);
+        expect(await rowCount(AppDatabase.tableParserDiagnostics), 0);
+        expect(
+          await rowCount(AppDatabase.tableNotificationIngestionReceipts),
+          0,
+        );
+        expect(
+          (await AppDatabase.instance.getAccount(accountId))?.currentBalance,
+          1000,
+        );
+
+        final committed = await processor.ingest(captured);
+        final replay = await processor.ingest(captured);
+
+        expect(committed.disposition, IngestionDisposition.posted);
+        expect(committed.isReceiptReplay, isFalse);
+        expect(replay.isReceiptReplay, isTrue);
+        expect(replay.disposition, committed.disposition);
+        expect(replay.rawEventId, committed.rawEventId);
+        expect(replay.parsedFinancialEventId, committed.parsedFinancialEventId);
+        expect(replay.transactionId, committed.transactionId);
+        expect(replay.diagnosticCode, committed.diagnosticCode);
+        expect(replay.duplicateConfidence, committed.duplicateConfidence);
+        expect(replay.matchedLedgerEntryId, committed.matchedLedgerEntryId);
+        expect(await rowCount(AppDatabase.tableRawNotificationEvents), 1);
+        expect(await rowCount(AppDatabase.tableParsedFinancialEvents), 1);
+        expect(await rowCount(AppDatabase.tableTransactionGroups), 1);
+        expect(await rowCount(AppDatabase.tableLedgerEntries), 1);
+        expect(await rowCount(AppDatabase.tableParsedEventGroupLinks), 1);
+        expect(await rowCount(AppDatabase.tableParsedEventLedgerLinks), 1);
+        expect(await rowCount(AppDatabase.tableTransactions), 1);
+        expect(
+          await rowCount(AppDatabase.tableNotificationIngestionReceipts),
+          1,
+        );
+        expect(
+          (await AppDatabase.instance.getAccount(accountId))?.currentBalance,
+          900,
+        );
+      },
+    );
+  }
+
+  test('concurrent delivery of one receipt commits exactly once', () async {
+    await createHdfcAccount();
+    final processor = trustedSmsProcessor();
+    final captured = envelope(
+      packageName: 'com.google.android.apps.messaging',
+      captureReceiptId: 'concurrent-receipt',
+    );
+
+    final results = await Future.wait([
+      processor.ingest(captured),
+      processor.ingest(captured),
+    ]);
+
+    expect(results.where((result) => result.isReceiptReplay), hasLength(1));
+    expect(results.map((result) => result.rawEventId).toSet(), hasLength(1));
+    expect(
+      results.map((result) => result.parsedFinancialEventId).toSet(),
+      hasLength(1),
+    );
+    expect(results.map((result) => result.transactionId).toSet(), hasLength(1));
+    expect(await rowCount(AppDatabase.tableRawNotificationEvents), 1);
+    expect(await rowCount(AppDatabase.tableParsedFinancialEvents), 1);
+    expect(await rowCount(AppDatabase.tableTransactionGroups), 1);
+    expect(await rowCount(AppDatabase.tableLedgerEntries), 1);
+    expect(await rowCount(AppDatabase.tableTransactions), 1);
+  });
+
   test(
-    'updated notification content creates a superseding source event',
+    'legacy null receipts remain processable without receipt rows',
     () async {
       await createHdfcAccount();
-      final processor = NotificationIngestionProcessor();
+      final processor = trustedSmsProcessor();
+      final captured = envelope(
+        packageName: 'com.google.android.apps.messaging',
+      );
+
+      final first = await processor.ingest(captured);
+      final second = await processor.ingest(captured);
+
+      expect(first.disposition, IngestionDisposition.posted);
+      expect(second.disposition, IngestionDisposition.sourceDuplicate);
+      expect(first.isReceiptReplay, isFalse);
+      expect(second.isReceiptReplay, isFalse);
+      expect(await rowCount(AppDatabase.tableRawNotificationEvents), 2);
+      expect(await rowCount(AppDatabase.tableParsedFinancialEvents), 2);
+      expect(await rowCount(AppDatabase.tableTransactions), 1);
+      expect(await rowCount(AppDatabase.tableNotificationIngestionReceipts), 0);
+    },
+  );
+
+  test(
+    'same-effect notification update links without a second effect',
+    () async {
+      await createHdfcAccount();
+      final processor = trustedSmsProcessor();
       final first = await processor.ingest(
-        envelope(packageName: 'com.google.android.apps.messaging'),
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          captureReceiptId: 'same-effect-v1',
+        ),
       );
       final second = await processor.ingest(
         envelope(
           packageName: 'com.google.android.apps.messaging',
+          captureReceiptId: 'same-effect-v2',
+          title: 'Updated HDFC transaction alert',
+        ),
+      );
+
+      expect(first.disposition, IngestionDisposition.posted);
+      expect(second.disposition, IngestionDisposition.sourceDuplicate);
+      expect(second.matchedLedgerEntryId, isNotNull);
+      final rawEvents = await AppDatabase.instance
+          .getAllRawNotificationEvents();
+      expect(rawEvents, hasLength(2));
+      expect(rawEvents.last.supersedesEventId, rawEvents.first.id);
+      expect(await rowCount(AppDatabase.tableTransactions), 1);
+      expect(await rowCount(AppDatabase.tableLedgerEntries), 1);
+    },
+  );
+
+  test(
+    'materially updated notification is retained without a second effect',
+    () async {
+      await createHdfcAccount();
+      final processor = trustedSmsProcessor();
+      final first = await processor.ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          captureReceiptId: 'receipt-original-100',
+        ),
+      );
+      final second = await processor.ingest(
+        envelope(
+          packageName: 'com.google.android.apps.messaging',
+          captureReceiptId: 'receipt-updated-125',
           content: 'INR 125.00 debited from HDFC Bank A/c XX1234 at Cafe.',
         ),
       );
 
       expect(first.disposition, IngestionDisposition.posted);
-      expect(second.disposition, IngestionDisposition.posted);
+      expect(second.disposition, IngestionDisposition.provisional);
+      expect(second.diagnosticCode, 'updated_notification_financial_conflict');
       final rawEvents = await AppDatabase.instance
           .getAllRawNotificationEvents();
       expect(rawEvents, hasLength(2));
       expect(rawEvents.last.supersedesEventId, rawEvents.first.id);
       expect(rawEvents.last.payloadHash, isNot(rawEvents.first.payloadHash));
-      expect(await AppDatabase.instance.getAllTransactions(), hasLength(2));
+      expect(await AppDatabase.instance.getAllTransactions(), hasLength(1));
+    },
+  );
+
+  test(
+    'third update cannot bypass a retained conflicting predecessor',
+    () async {
+      await createHdfcAccount();
+      final processor = trustedSmsProcessor();
+      final results = <IngestionResult>[];
+      for (final (index, amount) in <int>[100, 125, 150].indexed) {
+        results.add(
+          await processor.ingest(
+            envelope(
+              packageName: 'com.google.android.apps.messaging',
+              captureReceiptId: 'supersession-chain-v${index + 1}',
+              content:
+                  'INR $amount.00 debited from HDFC Bank A/c XX1234 at Cafe.',
+            ),
+          ),
+        );
+      }
+
+      expect(results.first.disposition, IngestionDisposition.posted);
+      expect(results[1].disposition, IngestionDisposition.provisional);
+      expect(results[2].disposition, IngestionDisposition.provisional);
+      expect(
+        results.skip(1).map((result) => result.diagnosticCode),
+        everyElement('updated_notification_financial_conflict'),
+      );
+      final rawEvents = await AppDatabase.instance
+          .getAllRawNotificationEvents();
+      expect(rawEvents, hasLength(3));
+      expect(rawEvents[1].supersedesEventId, rawEvents[0].id);
+      expect(rawEvents[2].supersedesEventId, rawEvents[1].id);
+      expect(await rowCount(AppDatabase.tableTransactions), 1);
+      expect(await rowCount(AppDatabase.tableLedgerEntries), 1);
     },
   );
 
@@ -956,7 +1428,7 @@ void main() {
         openingBalanceMinor: 10000,
       ),
     );
-    final result = await NotificationIngestionProcessor().ingest(
+    final result = await trustedSmsProcessor().ingest(
       envelope(
         packageName: 'com.google.android.apps.messaging',
         content: 'INR 100.00 paid using UPI at Cafe.',
@@ -991,4 +1463,20 @@ class _FixtureBundledClassifier implements FinancialNotificationClassifier {
       modelVersion: 'fixture-model-v1',
     );
   }
+}
+
+class _AlwaysProvisionalValidator implements ParseValidator {
+  const _AlwaysProvisionalValidator();
+
+  @override
+  ParseValidation validate({
+    required FinancialRelevance relevance,
+    required MonetaryCandidate? amount,
+    required FinancialDirection direction,
+    required FinancialEventStatus status,
+    required double overallConfidence,
+  }) => const ParseValidation(
+    decision: ParseDecision.provisional,
+    failureCode: 'forced_provisional_for_test',
+  );
 }

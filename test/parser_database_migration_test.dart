@@ -28,7 +28,7 @@ void main() {
   });
 
   test(
-    'v10 to v11 adds diagnostics table without changing ledger rows',
+    'v10 to current adds diagnostics table without changing account rows',
     () async {
       final db = await AppDatabase.instance.database;
       await db.execute('DROP TABLE parser_diagnostics');
@@ -46,7 +46,7 @@ void main() {
       await AppDatabase.instance.close();
 
       final migrated = await AppDatabase.instance.database;
-      expect(await migrated.getVersion(), 11);
+      expect(await migrated.getVersion(), AppDatabase.databaseVersion);
       expect(await AppDatabase.instance.getAccount(41), isNotNull);
       final tables = await migrated.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",

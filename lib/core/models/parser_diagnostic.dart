@@ -1,8 +1,9 @@
 import 'dart:convert';
 
-/// Value-free parser telemetry stored only in the encrypted local database.
-/// Raw notification text and extracted financial values are intentionally not
-/// representable by this model.
+/// Local parser telemetry stored only in the encrypted database and bounded by
+/// retention. [structuralFingerprint] is content-derived diagnostic evidence;
+/// it must never leave the database. [toExportMap] exposes only coarse,
+/// application-defined buckets.
 class ParserDiagnostic {
   const ParserDiagnostic({
     this.id,
@@ -54,64 +55,62 @@ class ParserDiagnostic {
   }
 
   Map<String, Object?> toExportMap() => {
-    'observedAt': observedAt.toUtc().toIso8601String(),
+    // Never export content-derived fingerprints or extractor strings: even a
+    // redacted/hash-shaped value can be matched against a notification corpus.
+    'observedDay': _observedDay,
     'parserVersion': parserVersion,
-    'extractorsUsed': extractorsUsed,
-    'decision': decision,
-    'confidence': confidence,
-    'failureCode': failureCode,
-    'sourceCategory': sourceCategory,
-    'structuralFingerprint': ParserDiagnosticRedactor.redactFingerprint(
-      structuralFingerprint,
-    ),
+    'decision': _allowedDecisions.contains(decision) ? decision : 'unknown',
+    'confidenceBand': switch (confidence) {
+      < .25 => 'none',
+      < .60 => 'low',
+      < .85 => 'medium',
+      _ => 'high',
+    },
+    'failureCategory': _failureCategory(failureCode),
+    'sourceCategory': _allowedSourceCategories.contains(sourceCategory)
+        ? sourceCategory
+        : 'unknownPackage',
   };
-}
 
-class ParserDiagnosticRedactor {
-  const ParserDiagnosticRedactor._();
+  String get _observedDay {
+    final utc = observedAt.toUtc();
+    return '${utc.year.toString().padLeft(4, '0')}-'
+        '${utc.month.toString().padLeft(2, '0')}-'
+        '${utc.day.toString().padLeft(2, '0')}';
+  }
 
-  static String redactFingerprint(String input) {
-    var output = input;
-    output = output.replaceAll(
-      RegExp(
-        r'(?:₹|\binr\b|\brs\.?\b)\s*[:\-]?\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?',
-        caseSensitive: false,
-      ),
-      '<AMOUNT>',
-    );
-    output = output.replaceAll(
-      RegExp(
-        r'\b(?:a/c|acct|account|card)\s*(?:no\.?|number|ending(?:\s+in)?)?\s*[:#-]?\s*(?:[x*.•●]+\s*)?\d{3,}\b',
-        caseSensitive: false,
-      ),
-      '<ACCOUNT>',
-    );
-    output = output.replaceAll(
-      RegExp(r'\b(?:x{2,}|\*{2,})\d{3,6}\b', caseSensitive: false),
-      '<ACCOUNT>',
-    );
-    // VPA must be redacted before a trailing "UPI Ref" label can be
-    // interpreted as a reference field.
-    output = output.replaceAll(
-      RegExp(r'\b[a-z0-9._-]{2,}@[a-z][a-z0-9.-]{1,}\b', caseSensitive: false),
-      '<VPA>',
-    );
-    output = output.replaceAll(
-      RegExp(
-        r'\b(?:utr|rrn|ref(?:erence)?|txn\s*id|transaction\s*id|upi\s*ref)\s*[:#-]?\s*[a-z0-9]{4,30}\b',
-        caseSensitive: false,
-      ),
-      '<REFERENCE>',
-    );
-    // A defensive fallback for fingerprints produced when merchant extraction
-    // was incomplete. It only redacts bounded merchant-position phrases.
-    output = output.replaceAllMapped(
-      RegExp(
-        r'\b(at|merchant)\s+([a-z0-9][a-z0-9 &._-]{1,60}?)(?=\s+(?:on|dated|ref|utr|rrn|using|via|from|$))',
-        caseSensitive: false,
-      ),
-      (match) => '${match.group(1)} <MERCHANT>',
-    );
-    return output.replaceAll(RegExp(r'\s+'), ' ').trim();
+  static const _allowedDecisions = <String>{
+    'autoPost',
+    'provisional',
+    'retainOnly',
+    'ignored',
+  };
+
+  static const _allowedSourceCategories = <String>{
+    'defaultSmsPackage',
+    'knownNonDefaultSmsPackage',
+    'knownFinancialPackage',
+    'knownWalletPackage',
+    'knownMerchantPackage',
+    'bestEffortEmailPackage',
+    'ignoredPackage',
+    'unknownPackage',
+  };
+
+  static String? _failureCategory(String? code) {
+    if (code == null) return null;
+    if (code.startsWith('status_')) return 'status';
+    return switch (code) {
+      'transaction_amount_missing' => 'amountMissing',
+      'direction_unresolved' => 'directionUnresolved',
+      'confidence_low' || 'confidence_provisional' => 'confidence',
+      'non_financial_or_sensitive' => 'nonFinancial',
+      'non_posting_financial_alert' => 'nonPosting',
+      'account_confirmation_required' || 'account_unresolved' => 'account',
+      'secondary_source_review_required' => 'secondarySource',
+      'unknown_source_insufficient_evidence' => 'sourceEvidence',
+      'updated_notification_financial_conflict' => 'updateConflict',
+      _ => 'other',
+    };
   }
 }
